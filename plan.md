@@ -62,20 +62,210 @@ After researching Obsidian's APIs, we've determined that using **native embed sy
 
 **Decision**: Use `![[]]` + native slash commands approach for superior user experience with similar implementation effort.
 
+## Inline Editing vs Modal Editing
+
+After researching inline editing capabilities in Obsidian, we've determined that **inline editing IS feasible** and would provide an even better user experience.
+
+### Proof of Concept: Table Enhancer Plugin
+
+The **ob-table-enhancer** plugin demonstrates successful inline editing in Obsidian:
+- Intercepts click events on rendered tables
+- Makes table cells `contenteditable` on click
+- Uses `EditorView.posAtDom()` to map DOM elements to source locations
+- Syncs changes back to markdown source
+- Exits edit mode on Enter/Escape or click outside
+
+### Inline SVG Editing Approach
+
+For SVG editing specifically, we would:
+
+**Instead of opening a modal**, we replace the displayed SVG with an interactive editor in the same location:
+
+1. **Click to edit**: User clicks on SVG embed
+2. **Replace display**: SVG display is replaced with SVG canvas + toolbar
+3. **Edit in place**: User draws/edits directly where SVG was displayed
+4. **Save & revert**: On save, changes sync to file and display reverts to static SVG
+
+### Technical Implementation for Inline Editing
+
+#### Reading View (Markdown Post Processor)
+```typescript
+registerMarkdownPostProcessor((el, ctx) => {
+  const embeds = el.querySelectorAll('.internal-embed[src$=".svg"]');
+
+  embeds.forEach((embed: HTMLElement) => {
+    const src = embed.getAttribute('src');
+    if (!src) return;
+
+    // Add click handler to entire embed (not just button)
+    embed.addEventListener('click', (e) => {
+      e.preventDefault();
+
+      // Replace embed with inline editor
+      this.replaceWithInlineEditor(embed, src, () => {
+        // On save: revert to display mode
+        this.revertToDisplay(embed, src);
+      });
+    });
+
+    // Optional: Add visual cue that it's editable
+    embed.addClass('svg-editable');
+  });
+});
+```
+
+#### Live Preview (CM6 ViewPlugin)
+```typescript
+const svgEditExtension = ViewPlugin.fromClass(class {
+  constructor(view: EditorView) {
+    // Add click handler to SVG embeds
+    view.dom.addEventListener('click', this.handleClick.bind(this), { capture: true });
+  }
+
+  handleClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const svgEmbed = target.closest('.cm-embed-block[data-file$=".svg"]');
+
+    if (svgEmbed) {
+      event.preventDefault();
+
+      // Get file path and position
+      const filePath = svgEmbed.getAttribute('data-file');
+      const pos = view.posAtDom(svgEmbed);
+
+      // Replace with inline editor
+      this.replaceWithInlineEditor(svgEmbed, filePath, pos);
+    }
+  }
+});
+```
+
+### Inline Editor Component Structure
+
+```typescript
+class InlineSVGEditor {
+  container: HTMLElement;
+  originalElement: HTMLElement;
+  svgCanvas: SVGElement;
+  toolbar: HTMLElement;
+
+  constructor(replaceTarget: HTMLElement, filePath: string, onSave: () => void) {
+    // Store original element for restoration
+    this.originalElement = replaceTarget;
+
+    // Create editor container
+    this.container = createDiv({ cls: 'inline-svg-editor' });
+
+    // Create toolbar (floating or inline)
+    this.toolbar = this.createToolbar();
+
+    // Load and create editable SVG canvas
+    this.svgCanvas = this.createEditableSVG(filePath);
+
+    // Assemble UI
+    this.container.appendChild(this.toolbar);
+    this.container.appendChild(this.svgCanvas);
+
+    // Replace original element
+    replaceTarget.replaceWith(this.container);
+
+    // Handle exit events
+    this.setupExitHandlers(onSave);
+  }
+
+  setupExitHandlers(onSave: () => void) {
+    // Save on Ctrl+S
+    this.container.addEventListener('keydown', (e) => {
+      if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        this.save();
+        onSave();
+      }
+      // Exit on Escape
+      if (e.key === 'Escape') {
+        this.exit(false);
+      }
+    });
+
+    // Optional: Exit on click outside
+    document.addEventListener('click', (e) => {
+      if (!this.container.contains(e.target as Node)) {
+        this.exit(true); // Auto-save on click outside
+      }
+    }, { once: true });
+  }
+
+  exit(save: boolean) {
+    if (save) this.save();
+    // Restore original element
+    this.container.replaceWith(this.originalElement);
+  }
+}
+```
+
+### Comparison: Inline vs Modal Editing
+
+| Aspect | Inline Editing | Modal Editing |
+|--------|----------------|---------------|
+| **UX** | Superior - edit where you see it | Good - dedicated space |
+| **Context** | No context switching | Switch to modal |
+| **Implementation** | More complex | Simpler |
+| **State Management** | Track active editor per embed | Single modal instance |
+| **Multiple Edits** | Need to handle multiple concurrent | Only one at a time |
+| **Toolbar Placement** | Challenging (overlay/float) | Easy (inside modal) |
+| **Screen Space** | Limited to embed size | Full control of size |
+| **Exit Handling** | Must detect click outside | Simple close button |
+| **Mobile Support** | More challenging | Easier |
+| **Overall Complexity** | **Higher** | **Lower** |
+
+### Recommended Approach
+
+**Option 1: Start with Modal (Faster MVP)**
+- Phase 1-4: Implement modal-based editing
+- Phase 6+: Add inline editing as enhancement
+- Users can choose preferred mode in settings
+
+**Option 2: Inline-First (Better UX from start)**
+- Implement inline editing from the beginning
+- Accept longer development time
+- Superior end-user experience
+
+**Recommendation**: Start with **inline editing** since we're building from scratch anyway. The UX benefits outweigh the additional complexity, and we avoid rewriting later.
+
+### Inline Editing Challenges & Solutions
+
+**Challenge 1: Toolbar Placement**
+- **Solution**: Floating toolbar that appears above/beside SVG, or fixed toolbar at top of editor container
+
+**Challenge 2: Exit Detection**
+- **Solution**: Combination of escape key, explicit save/cancel buttons, and click-outside detection (with confirmation if unsaved changes)
+
+**Challenge 3: Multiple Simultaneous Edits**
+- **Solution**: Only allow one SVG to be edited at a time; clicking another SVG auto-saves and closes current editor
+
+**Challenge 4: Small Embed Sizes**
+- **Solution**: Temporarily expand embed size during editing, or provide "edit full-size" option that opens modal
+
+**Challenge 5: Mobile Support**
+- **Solution**: Inline editing for tablet/desktop, automatically use modal on mobile screens
+
 ## Architecture
 
-### 1. Main Plugin Structure
+### 1. Main Plugin Structure (Inline Editing)
 
 ```
 DrawingBlocksPlugin (extends Plugin)
 ├── Command: "Create new drawing" (registered via addCommand)
-├── SVGEmbedProcessor (Markdown post processor for reading view)
-├── SVGLivePreviewExtension (CodeMirror 6 extension for live preview, optional)
-├── SVGEditor (Modal for SVG editing UI)
-├── DrawingToolbar (drawing tools interface)
+├── SVGEmbedProcessor (Markdown post processor - adds click handlers)
+├── SVGLivePreviewExtension (CM6 extension - adds click handlers, optional)
+├── InlineSVGEditor (Inline editor that replaces embed in place)
+├── DrawingToolbar (floating/overlay toolbar for drawing tools)
 ├── SVGFileManager (handles SVG file I/O)
+├── EditorStateManager (tracks which SVG is currently being edited)
 └── Settings (plugin configuration)
 ```
+
+**Key Change**: Instead of opening a Modal, we use `InlineSVGEditor` which replaces the SVG embed element directly in the DOM, allowing editing in place.
 
 ### 2. Key Components
 
@@ -216,14 +406,23 @@ this.registerEditorExtension([svgEditExtension]);
 
 **Note**: Live preview support is **optional for MVP** and can be added in Phase 5+ to reduce initial complexity.
 
-#### D. SVG Editor Component
-- **Purpose**: Core editing interface for SVG content (Modal-based)
-- **Implementation**: Extends Obsidian's `Modal` class
+#### D. Inline SVG Editor Component
+- **Purpose**: Core editing interface that replaces SVG embed in place
+- **Implementation**: Custom component that replaces DOM element
 - **Features**:
-  - Canvas area displaying the SVG
-  - Drawing toolbar (tools selection)
-  - Save/Cancel buttons
-  - Real-time preview of changes
+  - Replaces static SVG display with editable SVG canvas
+  - Floating/overlay toolbar for drawing tools
+  - Auto-save on exit or explicit save button
+  - Handles keyboard shortcuts (Ctrl+S, Escape)
+  - Detects click outside to exit edit mode
+  - Restores original display on exit
+
+**Editing Workflow**:
+1. User clicks SVG embed → Editor replaces the embed element
+2. Toolbar appears (floating above or fixed at top)
+3. User draws/edits directly on the SVG
+4. On save: Changes written to file, editor reverts to display
+5. On cancel: No changes, editor reverts to display
 
 **Drawing Tools**:
 1. **Pen/Pencil**: Freehand drawing (creates `<path>` elements)
@@ -233,6 +432,13 @@ this.registerEditorExtension([svgEditExtension]);
 5. **Select**: Select and move/resize elements
 6. **Eraser**: Delete individual elements
 7. **Clear**: Clear entire canvas
+
+**Exit Triggers**:
+- Escape key (cancel without saving)
+- Ctrl/Cmd+S (save and exit)
+- Save button (save and exit)
+- Cancel button (exit without saving)
+- Click outside editor (save and exit with confirmation)
 
 #### E. SVG File Manager
 - **Purpose**: Handle all file operations for SVG files
@@ -251,12 +457,29 @@ this.registerEditorExtension([svgEditExtension]);
 - Generate proper file paths relative to current note or in default folder
 
 #### F. Drawing Toolbar
-- **Purpose**: UI for selecting drawing tools and options
+- **Purpose**: Floating/overlay UI for selecting drawing tools
+- **Implementation**: Positioned relative to active editor (floating or docked)
 - **Features**:
   - Tool selection buttons
   - Color picker for stroke/fill
   - Stroke width selector
   - Undo/Redo buttons
+  - Save/Cancel buttons
+  - Compact design for minimal intrusion
+
+**Placement Options**:
+- **Floating**: Appears above SVG, can be dragged
+- **Top-docked**: Fixed at top of editor container
+- **Side-docked**: Fixed to left/right side
+- **Setting**: User can choose preferred placement
+
+#### G. Editor State Manager
+- **Purpose**: Track which SVG is currently being edited (prevent multiple simultaneous edits)
+- **Responsibilities**:
+  - Store reference to currently active inline editor
+  - Ensure only one SVG is edited at a time
+  - Handle switching between editors (auto-save current, open new)
+  - Clean up editor state on plugin unload
 
 ### 3. User Workflows
 
@@ -275,23 +498,29 @@ this.registerEditorExtension([svgEditExtension]);
 
 **Alternative**: User can also create SVG file manually and embed with `![[path/to/file.svg]]`
 
-#### Workflow 2: Edit Existing SVG Embed (Reading View)
+#### Workflow 2: Edit Existing SVG Embed (Reading View - Inline)
 1. User has embedded SVG: `![[drawings/my-drawing.svg]]`
-2. In reading view, drawing displays with "Edit" button overlay
-3. User clicks edit button
-4. Editor modal opens with existing SVG content
-5. User makes changes and clicks save
-6. Changes written back to SVG file
-7. All embeds of this SVG auto-refresh to show changes
+2. In reading view, SVG displays normally (with subtle visual cue it's editable)
+3. User **clicks directly on the SVG** (no separate button needed!)
+4. SVG display is replaced with inline editor in the same location
+5. Toolbar appears (floating or docked above)
+6. User draws/edits directly
+7. User presses Ctrl+S or clicks Save button
+8. Changes written back to SVG file
+9. Editor reverts to static SVG display showing updated drawing
 
-#### Workflow 3: Edit Existing SVG Embed (Live Preview)
+**Key advantage**: No context switching, edit exactly where you see it!
+
+#### Workflow 3: Edit Existing SVG Embed (Live Preview - Inline)
 1. User has embedded SVG: `![[drawings/my-drawing.svg]]`
-2. In live preview mode, wiki link shows rendered SVG with edit button
-3. User clicks edit button (or uses command palette)
-4. Editor modal opens with existing SVG content
-5. User makes changes and saves
-6. Changes written back to file
-7. Live preview updates automatically
+2. In live preview mode, SVG renders inline with the text
+3. User **clicks directly on the rendered SVG**
+4. SVG embed is replaced with inline editor
+5. Toolbar appears
+6. User draws/edits directly
+7. User saves (Ctrl+S or Save button)
+8. Changes written to file
+9. Live preview updates automatically to show static SVG
 
 **Note**: Workflow 3 requires CodeMirror 6 extension (Phase 6, optional for MVP)
 
@@ -435,91 +664,99 @@ interface DrawingBlocksSettings {
    - Verify command also appears in Command Palette
    - Test that command only available when editor is active
 
-### Phase 3: SVG Editor (Core Feature)
-7. **Create SVG Editor Modal**
-   - Extend Modal class
-   - Create editor UI layout (canvas area + toolbar area)
-   - Add SVG container element
-   - Load SVG content into editor (empty or from file)
-   - Style modal for full-screen or large size
+### Phase 3: Inline SVG Editor (Core Feature)
+7. **Create InlineSVGEditor class**
+   - Create component that can replace any DOM element
+   - Store reference to original element for restoration
+   - Create container div with `inline-svg-editor` class
+   - Handle element replacement with `replaceWith()`
+   - Implement cleanup and restoration logic
 
-8. **Implement drawing toolbar**
-   - Create toolbar UI with button grid
+8. **Implement editor state manager**
+   - Create EditorStateManager singleton
+   - Track currently active editor instance
+   - Implement "close current, open new" logic
+   - Prevent multiple simultaneous edits
+
+9. **Implement drawing toolbar (floating UI)**
+   - Create compact, floating toolbar
+   - Position above/beside SVG editor
    - Add tool selection buttons (pen, line, rect, circle, select, eraser)
-   - Add color picker for stroke color
-   - Add stroke width selector (slider or input)
-   - Highlight currently selected tool
+   - Add color picker and stroke width selector
+   - Add Save/Cancel buttons
+   - Make toolbar draggable (optional)
 
-9. **Implement basic drawing - Pen tool**
-   - Add mouse event handlers (mousedown, mousemove, mouseup)
-   - Create SVG `<path>` elements on canvas
-   - Build path data string with M (move) and L (line) commands
-   - Render real-time drawing as user moves mouse
-   - Apply current stroke color and width
+10. **Implement basic drawing - Pen tool**
+    - Add mouse event handlers to SVG canvas
+    - Create SVG `<path>` elements on mousedown/move/up
+    - Build path data string with M (move) and L (line) commands
+    - Render real-time drawing as user moves mouse
+    - Apply current stroke color and width
 
-10. **Implement shape tools**
+11. **Implement shape tools**
     - **Rectangle tool**: Draw `<rect>` with drag interaction
     - **Circle tool**: Draw `<circle>` with drag interaction
     - **Line tool**: Draw `<line>` with two-point interaction
     - Preview shape while dragging before finalizing
 
-11. **Implement selection tool**
+12. **Implement selection tool**
     - Select SVG elements by clicking
-    - Highlight selected element with bounding box or outline
+    - Highlight selected element with bounding box
     - Enable Delete key to remove selected element
     - Optional: Add move/resize handles (can defer to Phase 5)
 
-12. **Implement save functionality**
-    - Serialize SVG DOM to XML string
-    - Save to file using SVGFileManager
-    - If new drawing (from `/draw` command):
-      - Insert `![[filepath]]` at saved cursor position
-      - Replace `/draw` text with the embed
-    - Close modal after successful save
-    - Show success notification
+13. **Implement exit handling**
+    - Escape key: Cancel and revert to display
+    - Ctrl+S: Save and revert to display
+    - Save button: Save and revert
+    - Cancel button: Revert without saving
+    - Click outside: Show confirmation, then save and revert
+    - Serialize SVG DOM to XML and save to file
 
-### Phase 4: Reading View - SVG Embed Editing
-13. **Implement markdown post processor**
+### Phase 4: Reading View - Inline SVG Embed Editing
+14. **Implement markdown post processor with click handlers**
     - Use `registerMarkdownPostProcessor(handler)`
     - Find internal embed elements with `.svg` extension
-    - Check if embed is for SVG file (look for `.internal-embed[src$=".svg"]`)
-    - Extract file path from embed element
+    - Add click event listener to entire embed
+    - Add subtle visual cue (hover effect, cursor change)
+    - Extract file path on click
 
-14. **Add edit buttons to SVG embeds**
-    - Create edit button overlay on SVG embeds
-    - Position button over or near the SVG
-    - Style button to be visible but not intrusive
-    - Add click handler to open editor
+15. **Implement embed-to-editor replacement**
+    - On click: Create InlineSVGEditor instance
+    - Pass embed element as replacement target
+    - Load SVG content into editor
+    - Editor replaces embed in DOM
+    - Show toolbar
 
-15. **Connect embeds to editor**
-    - Extract SVG file path from embed
-    - Open editor modal with SVG content loaded
-    - Enable save to update the existing file
-    - Trigger vault refresh to update all embeds after save
+16. **Implement editor-to-display restoration**
+    - On save: Write changes to SVG file
+    - Restore original embed element
+    - Trigger re-render of SVG to show changes
+    - Use Obsidian's file update events to refresh
 
 ### Phase 5: Polish & Advanced Features
-16. **Implement undo/redo**
+17. **Implement undo/redo**
     - Maintain history stack of SVG states (snapshots after each action)
     - Add undo/redo buttons to toolbar
     - Handle Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) keyboard shortcuts
     - Limit history stack size (e.g., last 50 actions)
 
-17. **Add eraser tool**
+18. **Add eraser tool**
     - Enable clicking on elements to delete them
     - Show visual feedback on hover
     - Optional: Add "clear all" button with confirmation
 
-18. **Implement auto-save**
+19. **Implement auto-save**
     - Periodic saves while editing (configurable interval)
-    - Show "saving..." indicator
+    - Show "saving..." indicator in toolbar
     - Only auto-save if changes detected since last save
 
-19. **Add command palette commands**
-    - "Create new drawing" command (alternative to `/draw`)
-    - "Edit drawing at cursor" command (if cursor on SVG embed)
+20. **Add command palette commands**
+    - "Edit drawing at cursor" command (alternative to clicking)
+    - "Exit drawing edit mode" command (alternative to save/cancel buttons)
     - Commands show up in command palette for discoverability
 
-20. **Error handling and edge cases**
+21. **Error handling and edge cases**
     - Handle malformed SVG files gracefully
     - Handle missing files (show error message)
     - Handle permission errors (read-only files)
@@ -527,20 +764,22 @@ interface DrawingBlocksSettings {
     - Handle edge cases (empty drawings, very large drawings)
 
 ### Phase 6: Live Preview Support (Optional, Advanced)
-21. **Implement CodeMirror 6 extension**
+22. **Implement CodeMirror 6 extension**
     - Create ViewPlugin for live preview
-    - Detect SVG wiki links in syntax tree
-    - Add decorations (edit button widgets) to SVG embeds
-    - Handle click events to open editor
+    - Add click handler to detect SVG embeds in live preview
+    - Use `view.posAtDom()` to track embed location
+    - On click: Replace embed with InlineSVGEditor
+    - Handle restoration after save
     - Test in live preview mode
 
-22. **Register editor extension**
+23. **Register editor extension**
     - Use `this.registerEditorExtension([svgEditExtension])`
     - Ensure extension works across all editor instances
     - Handle extension lifecycle (cleanup on plugin unload)
+    - Test interaction with other CM6 plugins
 
 ### Phase 7: Testing & Refinement
-23. **Comprehensive testing**
+24. **Comprehensive testing**
     - Test `/draw` command in different contexts
     - Test editing SVGs in reading view
     - Test with various SVG files (simple, complex, malformed)
@@ -549,19 +788,26 @@ interface DrawingBlocksSettings {
     - Test undo/redo functionality
     - Test auto-save behavior
     - Test with file renames (backlinks should update)
+    - **Test inline editing**: Click to edit, toolbar appearance, save/cancel, exit handling
+    - **Test state management**: Switching between multiple SVGs
+    - **Test click outside**: Confirmation dialog, auto-save behavior
+    - **Test toolbar placement**: Floating positioning, draggability
+    - **Test edge cases**: Very small embeds, very large embeds, nested containers
 
-24. **Performance optimization**
+25. **Performance optimization**
     - Optimize rendering for large drawings (many elements)
     - Debounce auto-save to avoid excessive writes
     - Optimize path simplification for smoother pen tool
-    - Consider lazy-loading editor components
+    - Optimize inline editor initialization (lazy loading)
+    - Minimize DOM manipulation during edit/display transitions
 
-25. **Documentation**
+26. **Documentation**
     - Update README.md with comprehensive usage instructions
-    - Add screenshots/GIFs demonstrating workflows
-    - Document all keyboard shortcuts
+    - Add screenshots/GIFs demonstrating inline editing workflow
+    - Document all keyboard shortcuts (Ctrl+S, Escape, etc.)
     - Add troubleshooting section
     - Document settings and their effects
+    - Explain inline editing behavior (click to edit, auto-save, etc.)
 
 ## Key Obsidian APIs to Use
 
@@ -826,14 +1072,17 @@ async saveSVG(filePath: string, content: string): Promise<void> {
    - Test editor open/save workflow
 
 3. **Manual Testing Scenarios**
-   - **Creation**: Type `/draw`, select option, draw, save, verify embed inserted
-   - **Editing (Reading View)**: Open note with SVG embed, click edit, modify, save, verify changes
-   - **Editing (Live Preview)**: Same as above but in live preview mode (Phase 6)
+   - **Creation**: Type `/draw`, draw in inline editor, save, verify embed inserted
+   - **Inline Editing (Reading View)**: Click SVG embed directly, verify editor replaces display, draw, save, verify display restored
+   - **Inline Editing (Live Preview)**: Click SVG embed in live preview, verify inline editor works (Phase 6)
    - **Tools**: Test all drawing tools (pen, line, rect, circle, select, eraser)
+   - **Toolbar**: Test toolbar positioning, dragging, tool selection
+   - **Exit Methods**: Test all exit methods (Ctrl+S, Escape, Save button, Cancel button, click outside)
+   - **State Management**: Click one SVG, then click another, verify first auto-closes
    - **Undo/Redo**: Make changes, undo, redo, verify state
    - **Multiple Embeds**: Edit SVG referenced in multiple notes, verify all update
    - **File Operations**: Test with different folder structures, relative paths
-   - **Edge Cases**: Empty drawings, very large drawings, malformed SVG files
+   - **Edge Cases**: Empty drawings, very large drawings, malformed SVG files, very small embeds
    - **Obsidian Features**: Test with file rename (backlinks update), graph view, search
 
 ## Success Criteria
@@ -843,16 +1092,18 @@ The plugin will be considered successful when:
 2. ✅ Drawings are embedded with native `![[file.svg]]` syntax
 3. ✅ Users can draw using basic tools (pen, shapes, select, eraser)
 4. ✅ Drawings are saved as standard SVG files in the vault
-5. ✅ Users can edit any SVG embed by clicking edit button (reading view)
-6. ✅ Changes persist across Obsidian restarts and sync properly
-7. ✅ File renames automatically update all embeds (native Obsidian behavior)
-8. ✅ Drawings appear in graph view as connections
-9. ✅ The plugin performs well with reasonable-sized drawings
-10. ✅ The UI is intuitive and requires no documentation for basic use
+5. ✅ **Users can edit any SVG by clicking directly on it (inline editing)**
+6. ✅ **Editor appears exactly where the SVG was displayed (no modal/context switch)**
+7. ✅ Changes persist across Obsidian restarts and sync properly
+8. ✅ File renames automatically update all embeds (native Obsidian behavior)
+9. ✅ Drawings appear in graph view as connections
+10. ✅ The plugin performs well with reasonable-sized drawings
+11. ✅ **Editing feels natural and intuitive (click to edit, save to exit)**
+12. ✅ **Only one SVG can be edited at a time (no confusion)**
 
 ## Conclusion
 
-This updated plan provides a comprehensive approach to building the Obsidian Drawing Blocks plugin using **native Obsidian embed syntax** (`![[]]`) and **slash commands** (`/draw`) for the best user experience.
+This updated plan provides a comprehensive approach to building the Obsidian Drawing Blocks plugin using **native Obsidian embed syntax** (`![[]]`), **slash commands** (`/draw`), and **inline editing** for the best possible user experience.
 
 ### Key Decisions Summary:
 
@@ -866,15 +1117,23 @@ This updated plan provides a comprehensive approach to building the Obsidian Dra
    - Commands registered via `addCommand()` automatically appear in `/` menu
    - Zero custom code needed - Obsidian handles everything!
 
-3. **Phased Implementation**
-   - **MVP (Phases 1-4)**: Slash command + Reading view editing + Basic tools
+3. **Use inline editing instead of modals**
+   - **Superior UX**: Edit exactly where you see the SVG (no context switching)
+   - **Proven feasible**: ob-table-enhancer plugin demonstrates this works
+   - **Natural interaction**: Click SVG to edit, save to exit
+   - **More complex**: Requires state management, exit handling, toolbar positioning
+   - **Worth it**: Better user experience from day one
+
+4. **Phased Implementation**
+   - **MVP (Phases 1-4)**: Slash command + Inline editing (reading view) + Basic tools
    - **Polish (Phase 5)**: Undo/redo, auto-save, error handling
-   - **Advanced (Phase 6)**: Live preview support (optional)
+   - **Advanced (Phase 6)**: Live preview inline editing (optional)
    - **Refinement (Phase 7)**: Testing, optimization, documentation
 
-4. **Technical Stack**
+5. **Technical Stack**
    - **No external dependencies**: Use native DOM/SVG APIs
    - **Obsidian APIs**: `addCommand()`, Markdown Post Processor, Vault API
+   - **DOM manipulation**: Element replacement with `replaceWith()`
    - **Native integration**: Slash commands via Obsidian's core plugin
    - **Optional CM6**: For live preview support (Phase 6)
 
@@ -883,11 +1142,17 @@ This updated plan provides a comprehensive approach to building the Obsidian Dra
 **Start with these in order:**
 1. SVG File Manager (Phase 1)
 2. Command Registration (Phase 2) - Simple `addCommand()` call
-3. SVG Editor Modal (Phase 3)
-4. Reading View Embed Editing (Phase 4)
+3. **Inline SVG Editor** (Phase 3) - Core inline editing component
+4. Reading View Inline Editing (Phase 4) - Click handlers and integration
 
 Live preview support (CM6 extension) is optional and can be deferred to Phase 6 or later, allowing the plugin to be useful sooner with simpler implementation.
 
-**Key Simplification**: Using native slash commands integration means we don't need any custom EditorSuggest code - just a standard command registration!
+### Key Design Choices:
 
-This approach balances **excellent UX** with **pragmatic implementation**, leveraging Obsidian's native features while adding powerful drawing capabilities.
+**Inline Editing Over Modal**: While modals are simpler to implement, inline editing provides a significantly better user experience by eliminating context switching. The ob-table-enhancer plugin proves this approach is viable in Obsidian.
+
+**Native Integration**: Using native slash commands and `![[]]` embeds means the plugin feels like a natural part of Obsidian rather than a third-party addition.
+
+**Simplicity First**: Start with core inline editing in reading view (easier), then add live preview support later (harder).
+
+This approach delivers **exceptional UX** through **thoughtful implementation**, leveraging Obsidian's native features while pushing the boundaries with inline editing capabilities.
