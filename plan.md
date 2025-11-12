@@ -40,10 +40,11 @@ After researching Obsidian's APIs, we've determined that using **native embed sy
 - **Flexible**: Can insert the `![[]]` reference immediately or let user place it
 - **Discoverable**: Shows up in command palette and slash menu
 
-**Technical Feasibility**: ✅ **Straightforward**
-- Use `registerEditorSuggest` API (available since v0.12.7)
-- Extend `EditorSuggest` class with `onTrigger()` and `getSuggestions()`
-- Well-supported with many example implementations in community plugins
+**Technical Feasibility**: ✅ **Very Simple - No Custom Code Needed!**
+- Obsidian's native **Slash commands core plugin** automatically shows all commands from the command palette
+- Simply use standard `addCommand()` API with a name like "Create new drawing"
+- Command automatically appears when users type `/` (if slash commands plugin enabled)
+- No need for custom EditorSuggest implementation!
 
 ### Comparison with Code Block Approach
 
@@ -53,12 +54,13 @@ After researching Obsidian's APIs, we've determined that using **native embed sy
 | File References | Tracked by Obsidian | Not tracked |
 | Graph View | Shows connections | Doesn't appear |
 | Refactoring | Auto-updates | Manual updates needed |
-| Creation UX | Quick slash command | Manual code block typing |
-| Implementation | More complex (2 systems) | Simpler (1 system) |
+| Creation UX | Native `/` menu | Manual code block typing |
+| Slash Command | Auto-integrated via addCommand | Requires EditorSuggest |
+| Implementation | Standard addCommand() | Custom code block processor |
 | Live Preview | Requires CM6 extension | Built-in support |
-| **Overall** | **Better UX, more work** | **Simpler code, worse UX** |
+| **Overall** | **Better UX, similar complexity** | **Simpler rendering, worse UX** |
 
-**Decision**: Use `![[]]` + `/draw` approach for better user experience despite increased implementation complexity.
+**Decision**: Use `![[]]` + native slash commands approach for superior user experience with similar implementation effort.
 
 ## Architecture
 
@@ -66,9 +68,9 @@ After researching Obsidian's APIs, we've determined that using **native embed sy
 
 ```
 DrawingBlocksPlugin (extends Plugin)
-├── DrawSuggest (EditorSuggest for /draw command)
+├── Command: "Create new drawing" (registered via addCommand)
 ├── SVGEmbedProcessor (Markdown post processor for reading view)
-├── SVGLivePreviewExtension (CodeMirror 6 extension for live preview)
+├── SVGLivePreviewExtension (CodeMirror 6 extension for live preview, optional)
 ├── SVGEditor (Modal for SVG editing UI)
 ├── DrawingToolbar (drawing tools interface)
 ├── SVGFileManager (handles SVG file I/O)
@@ -77,44 +79,43 @@ DrawingBlocksPlugin (extends Plugin)
 
 ### 2. Key Components
 
-#### A. Slash Command Suggestor (`DrawSuggest`)
-- **Purpose**: Provide `/draw` command for creating new drawings
-- **API**: Extends `EditorSuggest` class, registered via `registerEditorSuggest()`
-- **Key Methods**:
-  - `onTrigger(cursor, editor, file)`: Detects when user types `/draw`
-  - `getSuggestions(context)`: Returns drawing creation options
-  - `selectSuggestion(suggestion, evt)`: Creates new SVG file and inserts `![[]]` embed
+#### A. Native Slash Command Integration
+- **Purpose**: Provide command for creating new drawings that appears in `/` menu
+- **API**: Standard `addCommand()` with `editorCallback`
+- **Auto-integration**: Automatically appears in slash commands menu (no custom code needed!)
+- **Command Name**: "Create new drawing" (users type `/draw` or `/create` to find it)
 
 **Implementation Example**:
 ```typescript
-class DrawSuggest extends EditorSuggest<DrawingSuggestion> {
-  onTrigger(cursor: EditorPosition, editor: Editor, file: TFile): EditorSuggestTriggerInfo | null {
-    const line = editor.getLine(cursor.line).substring(0, cursor.ch);
+// In plugin onload()
+this.addCommand({
+  id: 'create-new-drawing',
+  name: 'Create new drawing',
+  editorCallback: async (editor: Editor, view: MarkdownView) => {
+    // Create new SVG file
+    const filePath = await this.svgFileManager.createNewSVG();
 
-    // Check if line ends with /draw or /draw [partial text]
-    const match = line.match(/\/draw(\s+\S*)?$/);
-    if (!match) return null;
-
-    const queryStart = line.lastIndexOf('/draw');
-    return {
-      start: { line: cursor.line, ch: queryStart },
-      end: cursor,
-      query: match[1]?.trim() || ''
-    };
+    // Open editor modal
+    const modal = new SVGEditorModal(
+      this.app,
+      filePath,
+      this.svgFileManager,
+      (savedPath: string) => {
+        // On save: insert embed at cursor
+        const cursor = editor.getCursor();
+        editor.replaceRange(`![[${savedPath}]]`, cursor);
+      }
+    );
+    modal.open();
   }
-
-  getSuggestions(context: EditorSuggestContext): DrawingSuggestion[] {
-    return [
-      { type: 'new', name: 'New blank drawing' },
-      { type: 'template', name: 'New from template', templates: ['diagram', 'sketch'] }
-    ];
-  }
-
-  selectSuggestion(suggestion: DrawingSuggestion, evt: MouseEvent | KeyboardEvent) {
-    // Create new SVG file, open editor, insert ![[]] on save
-  }
-}
+});
 ```
+
+**How it works**:
+1. User types `/` in editor → Obsidian shows slash commands menu
+2. User types `draw` or `new` → Command appears in filtered list
+3. User selects command → Our `editorCallback` executes
+4. SVG file created, editor opens, on save embed is inserted
 
 #### B. Reading View - Markdown Post Processor
 - **Purpose**: Add edit buttons to SVG embeds in reading view
@@ -415,23 +416,24 @@ interface DrawingBlocksSettings {
      - Default stroke color and width
    - Load/save settings using `loadData()` and `saveData()`
 
-### Phase 2: Slash Command for Drawing Creation
-4. **Implement DrawSuggest class**
-   - Extend `EditorSuggest<DrawingSuggestion>`
-   - Implement `onTrigger()` to detect `/draw` pattern
-   - Implement `getSuggestions()` to return creation options
-   - Implement `selectSuggestion()` to handle user selection
+### Phase 2: Command Registration (Native Slash Command Integration)
+4. **Register "Create new drawing" command**
+   - Use `this.addCommand()` with `editorCallback`
+   - Set command name to "Create new drawing" (shows up when typing `/draw`)
+   - Command automatically appears in slash commands menu (if core plugin enabled)
+   - Also available via Command Palette (Ctrl/Cmd+P)
 
-5. **Register slash command**
-   - Use `this.registerEditorSuggest(new DrawSuggest(this))`
-   - Test `/draw` trigger in editor
-   - Verify suggestion popup appears
-
-6. **Connect slash command to file creation**
-   - Create new SVG file when suggestion selected
+5. **Implement command callback**
+   - Create new SVG file using SVGFileManager
    - Generate unique filename with timestamp
    - Store in configured default folder
-   - Keep reference to editor and cursor position for later insertion
+   - Store reference to editor and cursor position for embed insertion
+
+6. **Test command integration**
+   - Test typing `/` in editor to see if command appears
+   - Test typing `/draw` or `/create` to filter command
+   - Verify command also appears in Command Palette
+   - Test that command only available when editor is active
 
 ### Phase 3: SVG Editor (Core Feature)
 7. **Create SVG Editor Modal**
@@ -575,8 +577,23 @@ export default class DrawingBlocksPlugin extends Plugin {
     // Initialize file manager
     this.svgFileManager = new SVGFileManager(this.app, this.settings);
 
-    // Register slash command for creating drawings
-    this.registerEditorSuggest(new DrawSuggest(this));
+    // Register command for creating drawings (automatically appears in slash commands!)
+    this.addCommand({
+      id: 'create-new-drawing',
+      name: 'Create new drawing',
+      editorCallback: async (editor: Editor, view: MarkdownView) => {
+        await this.createNewDrawing(editor, view);
+      }
+    });
+
+    // Optional: Add command for editing drawing at cursor
+    this.addCommand({
+      id: 'edit-drawing-at-cursor',
+      name: 'Edit drawing at cursor',
+      editorCallback: async (editor: Editor, view: MarkdownView) => {
+        await this.editDrawingAtCursor(editor, view);
+      }
+    });
 
     // Register post processor for SVG embeds (reading view)
     this.registerMarkdownPostProcessor(this.processSVGEmbeds.bind(this));
@@ -584,84 +601,51 @@ export default class DrawingBlocksPlugin extends Plugin {
     // Optional: Register CM6 extension for live preview (Phase 6)
     // this.registerEditorExtension([createSVGEditExtension(this)]);
 
-    // Add command palette commands
-    this.addCommand({
-      id: 'create-new-drawing',
-      name: 'Create new drawing',
-      editorCallback: (editor: Editor, view: MarkdownView) => {
-        this.createNewDrawing(editor, view);
-      }
-    });
-
-    this.addCommand({
-      id: 'edit-drawing-at-cursor',
-      name: 'Edit drawing at cursor',
-      editorCallback: (editor: Editor, view: MarkdownView) => {
-        this.editDrawingAtCursor(editor, view);
-      }
-    });
-
     // Add settings tab
     this.addSettingTab(new DrawingBlocksSettingTab(this.app, this));
   }
 }
 ```
 
-### Slash Command (EditorSuggest)
+### Command Implementation (Auto-integrated with Slash Commands)
 ```typescript
-class DrawSuggest extends EditorSuggest<DrawingSuggestion> {
-  plugin: DrawingBlocksPlugin;
+async createNewDrawing(editor: Editor, view: MarkdownView) {
+  try {
+    // Create new SVG file with timestamp
+    const timestamp = moment().format('YYYY-MM-DD-HHmmss');
+    const fileName = `drawing-${timestamp}.svg`;
+    const folder = this.settings.defaultFolder || 'drawings';
+    const filePath = `${folder}/${fileName}`;
 
-  constructor(plugin: DrawingBlocksPlugin) {
-    super(plugin.app);
-    this.plugin = plugin;
-  }
+    // Ensure folder exists
+    await this.svgFileManager.ensureFolderExists(folder);
 
-  onTrigger(cursor: EditorPosition, editor: Editor, file: TFile): EditorSuggestTriggerInfo | null {
-    const line = editor.getLine(cursor.line).substring(0, cursor.ch);
+    // Create empty SVG file
+    await this.svgFileManager.createNewSVG(filePath);
 
-    // Match /draw or /draw followed by optional text
-    const match = line.match(/\/draw(\s+\S*)?$/);
-    if (!match) return null;
+    // Store cursor position for later
+    const cursor = editor.getCursor();
 
-    const queryStart = line.lastIndexOf('/draw');
-    return {
-      start: { line: cursor.line, ch: queryStart },
-      end: cursor,
-      query: match[1]?.trim() || ''
-    };
-  }
-
-  getSuggestions(context: EditorSuggestContext): DrawingSuggestion[] {
-    return [
-      { type: 'blank', label: 'New blank drawing', icon: '📝' },
-      { type: 'template', label: 'New from template', icon: '📋' }
-    ];
-  }
-
-  selectSuggestion(suggestion: DrawingSuggestion, evt: MouseEvent | KeyboardEvent) {
-    // Get editor context
-    const editor = this.context.editor;
-    const start = this.context.start;
-    const end = this.context.end;
-
-    // Create new SVG file
-    const filePath = await this.plugin.svgFileManager.createNewSVG();
-
-    // Open editor
-    const svgEditor = new SVGEditorModal(
-      this.plugin.app,
+    // Open SVG editor modal
+    const modal = new SVGEditorModal(
+      this.app,
       filePath,
-      this.plugin.svgFileManager,
+      this.svgFileManager,
       (savedPath: string) => {
         // On save callback: insert embed at cursor
-        editor.replaceRange(`![[${savedPath}]]`, start, end);
+        editor.replaceRange(`![[${savedPath}]]\n`, cursor);
+        new Notice('Drawing saved and embedded!');
       }
     );
-    svgEditor.open();
+    modal.open();
+  } catch (error) {
+    new Notice(`Failed to create drawing: ${error.message}`);
+    console.error('Error creating drawing:', error);
   }
 }
 ```
+
+**Note**: This command automatically appears in the slash commands menu when users type `/`. No custom EditorSuggest needed!
 
 ### Markdown Post Processor (Reading View)
 ```typescript
@@ -877,10 +861,10 @@ This updated plan provides a comprehensive approach to building the Obsidian Dra
    - Better integration: Graph view, backlinks, file rename support
    - Slightly more complex implementation (worth it for UX gains)
 
-2. **Use `/draw` slash command for creation**
+2. **Use native slash commands integration**
    - Natural workflow matching Obsidian patterns
-   - Discoverable and easy to use
-   - Straightforward implementation with EditorSuggest API
+   - Commands registered via `addCommand()` automatically appear in `/` menu
+   - Zero custom code needed - Obsidian handles everything!
 
 3. **Phased Implementation**
    - **MVP (Phases 1-4)**: Slash command + Reading view editing + Basic tools
@@ -890,17 +874,20 @@ This updated plan provides a comprehensive approach to building the Obsidian Dra
 
 4. **Technical Stack**
    - **No external dependencies**: Use native DOM/SVG APIs
-   - **Obsidian APIs**: EditorSuggest, Markdown Post Processor, Vault API
+   - **Obsidian APIs**: `addCommand()`, Markdown Post Processor, Vault API
+   - **Native integration**: Slash commands via Obsidian's core plugin
    - **Optional CM6**: For live preview support (Phase 6)
 
 ### Implementation Priority:
 
 **Start with these in order:**
 1. SVG File Manager (Phase 1)
-2. Slash Command (`/draw`) (Phase 2)
+2. Command Registration (Phase 2) - Simple `addCommand()` call
 3. SVG Editor Modal (Phase 3)
 4. Reading View Embed Editing (Phase 4)
 
 Live preview support (CM6 extension) is optional and can be deferred to Phase 6 or later, allowing the plugin to be useful sooner with simpler implementation.
+
+**Key Simplification**: Using native slash commands integration means we don't need any custom EditorSuggest code - just a standard command registration!
 
 This approach balances **excellent UX** with **pragmatic implementation**, leveraging Obsidian's native features while adding powerful drawing capabilities.
