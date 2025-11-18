@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
+	"id": "obsidian-drawing-blocks",
+	"name": "Drawing Blocks",
+	"version": "0.1.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Create and edit SVG drawings directly in your notes using inline editing. Use native ![[drawing.svg]] embeds with click-to-edit functionality.",
+	"author": "galkatzh",
+	"authorUrl": "",
 	"isDesktopOnly": false
 }

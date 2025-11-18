@@ -1,8 +1,56 @@
 /*
+ * Drawing Blocks Plugin Styles
+ */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Editable SVG embeds - add hover effect to indicate clickability */
+.internal-embed.svg-editable {
+	cursor: pointer;
+	transition: opacity 0.2s ease;
+}
 
-If your plugin does not need CSS, delete this file.
+.internal-embed.svg-editable:hover {
+	opacity: 0.8;
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
+}
 
-*/
+/* Drawing editor container */
+.drawing-blocks-editor {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Toolbar styles */
+.drawing-blocks-toolbar {
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.drawing-blocks-toolbar button:hover {
+	opacity: 0.8;
+}
+
+.drawing-blocks-toolbar button:active {
+	transform: scale(0.95);
+}
+
+/* Modal overlay for new drawings */
+.drawing-blocks-modal-overlay {
+	backdrop-filter: blur(2px);
+}
+
+/* Responsive adjustments for mobile */
+@media (max-width: 768px) {
+	.drawing-blocks-toolbar {
+		flex-wrap: wrap;
+		top: auto;
+		bottom: 8px;
+		max-width: calc(100% - 16px);
+	}
+
+	.drawing-blocks-editor {
+		min-width: 300px;
+		min-height: 200px;
+	}
+}
