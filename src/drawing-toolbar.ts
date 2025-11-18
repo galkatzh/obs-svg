@@ -19,6 +19,15 @@ export class DrawingToolbar {
 	private startPoint: { x: number; y: number } | null = null;
 	private pathData = '';
 
+	// Selection state
+	private selectedElement: SVGElement | null = null;
+	private selectionBox: SVGRectElement | null = null;
+
+	// Undo/redo state
+	private history: string[] = [];
+	private historyIndex = -1;
+	private maxHistorySize = 50;
+
 	constructor(
 		private containerEl: HTMLElement,
 		private svgElement: SVGSVGElement,
@@ -31,6 +40,12 @@ export class DrawingToolbar {
 		this.fillColor = settings.defaultFillColor;
 
 		this.setupDrawingListeners();
+
+		// Initialize history with current state (without re-rendering)
+		const serializer = new XMLSerializer();
+		const svgString = serializer.serializeToString(this.svgElement);
+		this.history.push(svgString);
+		this.historyIndex = 0;
 	}
 
 	/**
@@ -57,6 +72,13 @@ export class DrawingToolbar {
 		// Tool buttons
 		const toolsGroup = this.createToolsGroup();
 		this.toolbarEl.appendChild(toolsGroup);
+
+		// Separator
+		this.toolbarEl.appendChild(this.createSeparator());
+
+		// Undo/Redo buttons
+		const undoRedoGroup = this.createUndoRedoGroup();
+		this.toolbarEl.appendChild(undoRedoGroup);
 
 		// Separator
 		this.toolbarEl.appendChild(this.createSeparator());
@@ -126,6 +148,57 @@ export class DrawingToolbar {
 		});
 
 		return btn;
+	}
+
+	/**
+	 * Create the undo/redo group
+	 */
+	private createUndoRedoGroup(): HTMLElement {
+		const group = document.createElement('div');
+		group.style.display = 'flex';
+		group.style.gap = '4px';
+
+		// Undo button
+		const undoBtn = document.createElement('button');
+		undoBtn.textContent = '↶';
+		undoBtn.title = 'Undo (Ctrl+Z)';
+		undoBtn.style.cssText = `
+			padding: 6px 10px;
+			border: 1px solid var(--background-modifier-border);
+			background: var(--background-primary);
+			border-radius: 3px;
+			cursor: pointer;
+			font-size: 18px;
+		`;
+		undoBtn.disabled = !this.canUndo();
+		if (undoBtn.disabled) {
+			undoBtn.style.opacity = '0.5';
+			undoBtn.style.cursor = 'not-allowed';
+		}
+		undoBtn.addEventListener('click', () => this.undo());
+		group.appendChild(undoBtn);
+
+		// Redo button
+		const redoBtn = document.createElement('button');
+		redoBtn.textContent = '↷';
+		redoBtn.title = 'Redo (Ctrl+Shift+Z)';
+		redoBtn.style.cssText = `
+			padding: 6px 10px;
+			border: 1px solid var(--background-modifier-border);
+			background: var(--background-primary);
+			border-radius: 3px;
+			cursor: pointer;
+			font-size: 18px;
+		`;
+		redoBtn.disabled = !this.canRedo();
+		if (redoBtn.disabled) {
+			redoBtn.style.opacity = '0.5';
+			redoBtn.style.cursor = 'not-allowed';
+		}
+		redoBtn.addEventListener('click', () => this.redo());
+		group.appendChild(redoBtn);
+
+		return group;
 	}
 
 	/**
@@ -240,12 +313,32 @@ export class DrawingToolbar {
 		this.svgElement.addEventListener('mousemove', (e) => this.handleMouseMove(e));
 		this.svgElement.addEventListener('mouseup', (e) => this.handleMouseUp(e));
 		this.svgElement.addEventListener('mouseleave', (e) => this.handleMouseUp(e));
+
+		// Add keyboard listener for delete key
+		document.addEventListener('keydown', (e) => this.handleKeyDown(e));
 	}
 
 	/**
 	 * Handle mouse down event
 	 */
 	private handleMouseDown(e: MouseEvent): void {
+		const target = e.target as SVGElement;
+
+		// Handle select tool
+		if (this.activeTool === 'select') {
+			this.handleSelectClick(target);
+			return;
+		}
+
+		// Handle eraser tool
+		if (this.activeTool === 'eraser') {
+			this.handleEraserClick(target);
+			return;
+		}
+
+		// Clear selection when starting to draw
+		this.clearSelection();
+
 		this.isDrawing = true;
 		const point = this.getMousePosition(e);
 		this.startPoint = point;
@@ -289,6 +382,9 @@ export class DrawingToolbar {
 			this.currentElement = null;
 			this.startPoint = null;
 			this.pathData = '';
+
+			// Save to history
+			this.saveToHistory();
 
 			// Notify of change
 			if (this.drawingChangeCallback) {
@@ -420,6 +516,212 @@ export class DrawingToolbar {
 	}
 
 	/**
+	 * Handle select tool click
+	 */
+	private handleSelectClick(target: SVGElement): void {
+		// Don't select the SVG itself or the selection box
+		if (target === this.svgElement || target === this.selectionBox) {
+			this.clearSelection();
+			return;
+		}
+
+		// Check if the target is a drawable element
+		if (target.tagName === 'path' || target.tagName === 'line' ||
+		    target.tagName === 'rect' || target.tagName === 'circle') {
+			this.selectElement(target);
+		} else {
+			this.clearSelection();
+		}
+	}
+
+	/**
+	 * Select an element
+	 */
+	private selectElement(element: SVGElement): void {
+		this.clearSelection();
+		this.selectedElement = element;
+
+		// Create selection box
+		const bbox = (element as SVGGraphicsElement).getBBox();
+		this.selectionBox = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+		this.selectionBox.setAttribute('x', String(bbox.x - 2));
+		this.selectionBox.setAttribute('y', String(bbox.y - 2));
+		this.selectionBox.setAttribute('width', String(bbox.width + 4));
+		this.selectionBox.setAttribute('height', String(bbox.height + 4));
+		this.selectionBox.setAttribute('fill', 'none');
+		this.selectionBox.setAttribute('stroke', '#4299e1');
+		this.selectionBox.setAttribute('stroke-width', '2');
+		this.selectionBox.setAttribute('stroke-dasharray', '5,5');
+		this.selectionBox.style.pointerEvents = 'none';
+		this.svgElement.appendChild(this.selectionBox);
+	}
+
+	/**
+	 * Clear current selection
+	 */
+	private clearSelection(): void {
+		if (this.selectionBox) {
+			this.selectionBox.remove();
+			this.selectionBox = null;
+		}
+		this.selectedElement = null;
+	}
+
+	/**
+	 * Handle eraser tool click
+	 */
+	private handleEraserClick(target: SVGElement): void {
+		// Don't erase the SVG itself or the selection box
+		if (target === this.svgElement || target === this.selectionBox) {
+			return;
+		}
+
+		// Check if the target is a drawable element
+		if (target.tagName === 'path' || target.tagName === 'line' ||
+		    target.tagName === 'rect' || target.tagName === 'circle') {
+			target.remove();
+			this.saveToHistory();
+
+			// Notify of change
+			if (this.drawingChangeCallback) {
+				this.drawingChangeCallback();
+			}
+		}
+	}
+
+	/**
+	 * Handle keyboard events
+	 */
+	private handleKeyDown(e: KeyboardEvent): void {
+		// Undo: Ctrl+Z (but not Ctrl+Shift+Z)
+		if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+			if (this.canUndo()) {
+				e.preventDefault();
+				this.undo();
+			}
+		}
+
+		// Redo: Ctrl+Shift+Z or Ctrl+Y
+		if (((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) ||
+		    ((e.ctrlKey || e.metaKey) && e.key === 'y')) {
+			if (this.canRedo()) {
+				e.preventDefault();
+				this.redo();
+			}
+		}
+
+		// Delete key: delete selected element
+		if (e.key === 'Delete' || e.key === 'Backspace') {
+			if (this.selectedElement) {
+				e.preventDefault();
+				this.selectedElement.remove();
+				this.clearSelection();
+				this.saveToHistory();
+
+				// Notify of change
+				if (this.drawingChangeCallback) {
+					this.drawingChangeCallback();
+				}
+			}
+		}
+	}
+
+	/**
+	 * Save current SVG state to history
+	 */
+	private saveToHistory(): void {
+		const serializer = new XMLSerializer();
+		const svgString = serializer.serializeToString(this.svgElement);
+
+		// Remove any future states (when undoing and then making a new change)
+		this.history = this.history.slice(0, this.historyIndex + 1);
+
+		// Add new state
+		this.history.push(svgString);
+
+		// Limit history size
+		if (this.history.length > this.maxHistorySize) {
+			this.history.shift();
+		} else {
+			this.historyIndex++;
+		}
+	}
+
+	/**
+	 * Check if undo is available
+	 */
+	private canUndo(): boolean {
+		return this.historyIndex > 0;
+	}
+
+	/**
+	 * Check if redo is available
+	 */
+	private canRedo(): boolean {
+		return this.historyIndex < this.history.length - 1;
+	}
+
+	/**
+	 * Undo the last action
+	 */
+	private undo(): void {
+		if (!this.canUndo()) return;
+
+		this.historyIndex--;
+		this.restoreFromHistory();
+		this.render();
+	}
+
+	/**
+	 * Redo the last undone action
+	 */
+	private redo(): void {
+		if (!this.canRedo()) return;
+
+		this.historyIndex++;
+		this.restoreFromHistory();
+		this.render();
+	}
+
+	/**
+	 * Restore SVG from history at current index
+	 */
+	private restoreFromHistory(): void {
+		if (this.historyIndex < 0 || this.historyIndex >= this.history.length) {
+			return;
+		}
+
+		const svgString = this.history[this.historyIndex];
+		const parser = new DOMParser();
+		const doc = parser.parseFromString(svgString, 'image/svg+xml');
+		const newSvg = doc.querySelector('svg');
+
+		if (newSvg) {
+			// Clear current SVG content
+			while (this.svgElement.firstChild) {
+				this.svgElement.removeChild(this.svgElement.firstChild);
+			}
+
+			// Copy attributes
+			Array.from(newSvg.attributes).forEach(attr => {
+				this.svgElement.setAttribute(attr.name, attr.value);
+			});
+
+			// Copy children
+			Array.from(newSvg.children).forEach(child => {
+				this.svgElement.appendChild(child.cloneNode(true));
+			});
+
+			this.clearSelection();
+
+			// Notify of change
+			if (this.drawingChangeCallback) {
+				this.drawingChangeCallback();
+			}
+		}
+	}
+
+	/**
 	 * Register a callback for drawing changes
 	 */
 	onDrawingChange(callback: () => void): void {
@@ -434,5 +736,6 @@ export class DrawingToolbar {
 			this.toolbarEl.remove();
 			this.toolbarEl = null;
 		}
+		this.clearSelection();
 	}
 }
