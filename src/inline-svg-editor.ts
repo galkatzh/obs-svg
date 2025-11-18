@@ -214,8 +214,8 @@ export class InlineSVGEditor {
 	 */
 	private handleCancel(): void {
 		if (this.hasUnsavedChanges) {
-			// TODO: Show confirmation dialog
-			const confirmed = confirm('You have unsaved changes. Are you sure you want to close?');
+			// Use native confirm for now - could be replaced with Obsidian modal in future
+			const confirmed = confirm('You have unsaved changes. Discard changes and close?');
 			if (!confirmed) return;
 		}
 
