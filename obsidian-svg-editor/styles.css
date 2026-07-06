@@ -1,0 +1,361 @@
+/* ==================================================================
+   SVG Editor — rendered ```svg blocks
+   ================================================================== */
+
+.svge-block {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    padding: 4px 0;
+}
+
+.svge-block svg {
+    max-width: 100%;
+    height: auto;
+}
+
+.svge-block-error {
+    color: var(--text-error);
+    font-size: var(--font-ui-small);
+    padding: 8px 12px;
+    border: 1px dashed var(--text-error);
+    border-radius: var(--radius-s);
+}
+
+.svge-block-empty {
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+    padding: 16px 24px;
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: var(--radius-s);
+}
+
+.svge-edit-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    padding: var(--size-2-2) var(--size-2-3);
+    box-shadow: var(--shadow-s);
+}
+
+.svge-block:hover .svge-edit-btn,
+.svge-edit-btn:focus-visible {
+    opacity: 1;
+}
+
+/* ==================================================================
+   Editor modal
+   ================================================================== */
+
+.modal.svge-modal {
+    width: min(94vw, 1100px);
+    height: min(88vh, 800px);
+    max-width: none;
+    max-height: none;
+    padding: 0;
+}
+
+.svge-modal .modal-content.svge-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    gap: 0;
+    padding: var(--size-4-3);
+}
+
+/* ----- Header ----- */
+
+.svge-header {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2);
+    padding-bottom: var(--size-4-2);
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-wrap: wrap;
+}
+
+.svge-title {
+    font-weight: var(--font-semibold);
+    font-size: var(--font-ui-medium);
+}
+
+.svge-tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--background-secondary);
+    border-radius: var(--radius-m);
+    padding: 2px;
+}
+
+.svge-tab {
+    box-shadow: none;
+    background: transparent;
+    padding: var(--size-2-2) var(--size-4-2);
+    font-size: var(--font-ui-small);
+}
+
+.svge-tab.is-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.svge-spacer {
+    flex: 1;
+}
+
+.svge-size {
+    display: flex;
+    align-items: center;
+    gap: var(--size-2-1);
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+}
+
+.svge-size input {
+    width: 64px;
+    text-align: center;
+}
+
+.svge-actions {
+    display: flex;
+    gap: var(--size-2-3);
+}
+
+/* ----- Body ----- */
+
+.svge-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.svge-visual {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2);
+    padding-top: var(--size-4-2);
+}
+
+.svge-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: var(--size-4-2);
+}
+
+.svge-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-2-2);
+    padding: var(--size-2-2);
+    background: var(--background-secondary);
+    border-radius: var(--radius-m);
+    align-self: flex-start;
+}
+
+.svge-tool {
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: none;
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: var(--radius-s);
+}
+
+.svge-tool:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.svge-tool.is-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.svge-canvas-wrap {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--background-secondary);
+    border-radius: var(--radius-m);
+    overflow: auto;
+    padding: var(--size-4-2);
+}
+
+svg.svge-canvas {
+    background: white;
+    border-radius: 2px;
+    box-shadow: var(--shadow-s);
+    max-width: 100%;
+    max-height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+}
+
+svg.svge-canvas[data-tool="select"] {
+    cursor: default;
+}
+
+svg.svge-canvas[data-tool="delete"] {
+    cursor: not-allowed;
+}
+
+svg.svge-canvas .svge-selbox {
+    fill: none;
+    stroke: var(--color-accent, #7c3aed);
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+svg.svge-canvas .svge-marquee {
+    fill: rgba(0, 170, 255, 0.08);
+    stroke: #00aaff;
+    stroke-width: 1;
+    stroke-dasharray: 5 5;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+/* ----- Properties bar ----- */
+
+.svge-props {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-3);
+    flex-wrap: wrap;
+    padding: var(--size-2-3) var(--size-4-2);
+    background: var(--background-secondary);
+    border-radius: var(--radius-m);
+}
+
+.svge-prop-group {
+    display: flex;
+    align-items: center;
+    gap: var(--size-2-2);
+}
+
+.svge-prop-label {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.svge-prop-value {
+    font-size: var(--font-ui-small);
+    font-variant-numeric: tabular-nums;
+    min-width: 3ch;
+    color: var(--text-muted);
+}
+
+.svge-props input[type="color"] {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: transparent;
+    cursor: pointer;
+}
+
+.svge-props input[type="range"] {
+    width: 90px;
+}
+
+.svge-checkbox {
+    display: flex;
+    align-items: center;
+    gap: var(--size-2-1);
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.svge-hist {
+    margin-left: auto;
+}
+
+.svge-hist button {
+    padding: var(--size-2-2) var(--size-2-3);
+    box-shadow: none;
+    background: transparent;
+    color: var(--text-muted);
+}
+
+.svge-hist button:hover:not(:disabled) {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.svge-hist button:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.svge-selection-note {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-accent);
+    min-width: 0;
+}
+
+.svge-selection-note:empty {
+    display: none;
+}
+
+/* ----- Code mode ----- */
+
+.svge-code {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-2-3);
+    padding-top: var(--size-4-2);
+}
+
+.svge-code-area {
+    flex: 1;
+    width: 100%;
+    resize: none;
+    font-family: var(--font-monospace);
+    font-size: var(--font-smaller);
+    line-height: 1.5;
+    tab-size: 2;
+    white-space: pre;
+}
+
+.svge-code-error {
+    display: none;
+    color: var(--text-error);
+    font-size: var(--font-ui-small);
+    padding: var(--size-2-2) var(--size-2-3);
+    border: 1px solid var(--text-error);
+    border-radius: var(--radius-s);
+}
+
+.svge-code-error.is-visible {
+    display: block;
+}
+
+/* ----- Status bar ----- */
+
+.svge-status {
+    padding-top: var(--size-2-3);
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    border-top: 1px solid var(--background-modifier-border);
+    margin-top: var(--size-4-2);
+}

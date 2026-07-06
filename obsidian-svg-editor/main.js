@@ -1,0 +1,1213 @@
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/main.ts
+var main_exports = {};
+__export(main_exports, {
+  default: () => SvgEditorPlugin
+});
+module.exports = __toCommonJS(main_exports);
+var import_obsidian3 = require("obsidian");
+
+// src/editor.ts
+var SVG_NS = "http://www.w3.org/2000/svg";
+var DEFAULT_WIDTH = 480;
+var DEFAULT_HEIGHT = 320;
+function emptySvgSource(w = DEFAULT_WIDTH, h = DEFAULT_HEIGHT) {
+  return `<svg xmlns="${SVG_NS}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+</svg>`;
+}
+var FORBIDDEN_TAGS = /* @__PURE__ */ new Set(["script", "foreignobject", "iframe", "embed", "object"]);
+function sanitizeSvgTree(root) {
+  const doomed = [];
+  const walk = (el) => {
+    if (FORBIDDEN_TAGS.has(el.tagName.toLowerCase())) {
+      doomed.push(el);
+      return;
+    }
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+      } else if ((name === "href" || name === "xlink:href") && attr.value.trim().toLowerCase().startsWith("javascript:")) {
+        el.removeAttribute(attr.name);
+      }
+    }
+    for (const child of Array.from(el.children)) walk(child);
+  };
+  walk(root);
+  doomed.forEach((el) => el.remove());
+}
+function parseSvgSource(source) {
+  const doc = new DOMParser().parseFromString(source, "image/svg+xml");
+  const err = doc.querySelector("parsererror");
+  if (err) {
+    const msg = (err.textContent ?? "Invalid SVG").split("\n").find((l) => l.includes("error")) ?? "Invalid SVG";
+    throw new Error(msg.trim());
+  }
+  const root = doc.documentElement;
+  if (root.tagName.toLowerCase() !== "svg") {
+    throw new Error(`Root element is <${root.tagName}>, expected <svg>`);
+  }
+  sanitizeSvgTree(root);
+  return root;
+}
+function prettyPrintXml(xml) {
+  const withBreaks = xml.replace(/>\s*</g, ">\n<").trim();
+  let indent = 0;
+  const out = [];
+  for (const line of withBreaks.split("\n")) {
+    const isClosing = /^<\//.test(line);
+    const isSelfContained = /\/>$/.test(line) || /^<[^>]+>[^<]*<\/[^>]+>$/.test(line) || /^<[?!]/.test(line);
+    if (isClosing) indent = Math.max(0, indent - 1);
+    out.push("  ".repeat(indent) + line);
+    if (!isClosing && !isSelfContained && /^</.test(line)) indent++;
+  }
+  return out.join("\n");
+}
+var SvgEditorCore = class {
+  constructor(containerEl) {
+    this.containerEl = containerEl;
+    this.vb = { x: 0, y: 0, w: DEFAULT_WIDTH, h: DEFAULT_HEIGHT };
+    /** Root <svg> attributes preserved verbatim from the loaded source. */
+    this.rootAttrs = /* @__PURE__ */ new Map();
+    this.tool = "select";
+    this.style = {
+      stroke: "#000000",
+      strokeWidth: 2,
+      fill: "#ffffff",
+      fillTransparent: true,
+      opacity: 1
+    };
+    this.selection = [];
+    this.states = [];
+    this.stateIndex = -1;
+    this.draw = null;
+    this.onSelectionChange = () => {
+    };
+    this.onHistoryChange = () => {
+    };
+    this.onStatus = () => {
+    };
+    this.onSizeChange = () => {
+    };
+    this.boundPointerMove = (e) => this.handlePointerMove(e);
+    this.boundPointerUp = (e) => this.handlePointerUp(e);
+    this.svgEl = document.createElementNS(SVG_NS, "svg");
+    this.svgEl.classList.add("svge-canvas");
+    this.overlayEl = document.createElementNS(SVG_NS, "g");
+    this.overlayEl.setAttribute("data-svge-overlay", "");
+    this.svgEl.appendChild(this.overlayEl);
+    containerEl.appendChild(this.svgEl);
+    this.svgEl.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+    this.applyViewBox();
+  }
+  destroy() {
+    window.removeEventListener("pointermove", this.boundPointerMove);
+    window.removeEventListener("pointerup", this.boundPointerUp);
+    this.svgEl.remove();
+  }
+  // ------------------------------------------------------------------
+  // Loading / serialization
+  // ------------------------------------------------------------------
+  /** Load SVG source, replacing all content and resetting history. */
+  load(source) {
+    this.restoreFromSource(source.trim() ? source : emptySvgSource());
+    this.states = [this.serialize(false)];
+    this.stateIndex = 0;
+    this.notifyHistory();
+  }
+  /** Replace content from code-mode text; recorded as a single undoable step. */
+  loadFromCode(source) {
+    this.restoreFromSource(source.trim() ? source : emptySvgSource());
+    this.commit();
+  }
+  restoreFromSource(source) {
+    const parsed = parseSvgSource(source);
+    const vbAttr = parsed.getAttribute("viewBox");
+    const wAttr = parseFloat(parsed.getAttribute("width") ?? "");
+    const hAttr = parseFloat(parsed.getAttribute("height") ?? "");
+    if (vbAttr) {
+      const p = vbAttr.trim().split(/[\s,]+/).map(parseFloat);
+      if (p.length === 4 && p.every((n) => isFinite(n))) {
+        this.vb = { x: p[0], y: p[1], w: p[2], h: p[3] };
+      }
+    } else if (isFinite(wAttr) && isFinite(hAttr) && wAttr > 0 && hAttr > 0) {
+      this.vb = { x: 0, y: 0, w: wAttr, h: hAttr };
+    } else {
+      this.vb = { x: 0, y: 0, w: DEFAULT_WIDTH, h: DEFAULT_HEIGHT };
+    }
+    this.rootAttrs.clear();
+    for (const attr of Array.from(parsed.attributes)) {
+      const n = attr.name.toLowerCase();
+      if (n === "xmlns" || n === "width" || n === "height" || n === "viewbox" || n.startsWith("xmlns:")) {
+        continue;
+      }
+      this.rootAttrs.set(attr.name, attr.value);
+    }
+    this.contentChildren().forEach((el) => el.remove());
+    for (const child of Array.from(parsed.childNodes)) {
+      this.svgEl.insertBefore(document.importNode(child, true), this.overlayEl);
+    }
+    this.clearSelection();
+    this.applyViewBox();
+    this.onSizeChange(this.vb.w, this.vb.h);
+  }
+  /** Serialize current content (overlay excluded) back to SVG source. */
+  serialize(pretty = true) {
+    const clone = this.svgEl.cloneNode(true);
+    clone.querySelector("[data-svge-overlay]")?.remove();
+    clone.removeAttribute("class");
+    clone.removeAttribute("style");
+    clone.removeAttribute("data-tool");
+    clone.setAttribute("xmlns", SVG_NS);
+    clone.setAttribute("width", String(this.vb.w));
+    clone.setAttribute("height", String(this.vb.h));
+    clone.setAttribute("viewBox", `${this.vb.x} ${this.vb.y} ${this.vb.w} ${this.vb.h}`);
+    for (const [k, v] of this.rootAttrs) clone.setAttribute(k, v);
+    const raw = new XMLSerializer().serializeToString(clone);
+    return pretty ? prettyPrintXml(raw) : raw;
+  }
+  /** Top-level editable elements (everything except the editor overlay). */
+  contentChildren() {
+    return Array.from(this.svgEl.children).filter(
+      (el) => el !== this.overlayEl
+    );
+  }
+  applyViewBox() {
+    this.svgEl.setAttribute("viewBox", `${this.vb.x} ${this.vb.y} ${this.vb.w} ${this.vb.h}`);
+    this.svgEl.style.aspectRatio = `${this.vb.w} / ${this.vb.h}`;
+  }
+  getCanvasSize() {
+    return { w: this.vb.w, h: this.vb.h };
+  }
+  setCanvasSize(w, h) {
+    if (!(w > 0) || !(h > 0)) return;
+    this.vb.w = w;
+    this.vb.h = h;
+    this.applyViewBox();
+    this.refreshSelectionBoxes();
+    this.commit();
+    this.onStatus(`Canvas resized to ${w} \xD7 ${h}`);
+  }
+  // ------------------------------------------------------------------
+  // History
+  // ------------------------------------------------------------------
+  commit() {
+    const snapshot = this.serialize(false);
+    if (this.states[this.stateIndex] === snapshot) return;
+    this.states = this.states.slice(0, this.stateIndex + 1);
+    this.states.push(snapshot);
+    if (this.states.length > 100) this.states.shift();
+    this.stateIndex = this.states.length - 1;
+    this.notifyHistory();
+  }
+  canUndo() {
+    return this.stateIndex > 0;
+  }
+  canRedo() {
+    return this.stateIndex < this.states.length - 1;
+  }
+  undo() {
+    if (!this.canUndo()) return;
+    this.stateIndex--;
+    this.restoreFromSource(this.states[this.stateIndex]);
+    this.notifyHistory();
+    this.onStatus("Undo");
+  }
+  redo() {
+    if (!this.canRedo()) return;
+    this.stateIndex++;
+    this.restoreFromSource(this.states[this.stateIndex]);
+    this.notifyHistory();
+    this.onStatus("Redo");
+  }
+  notifyHistory() {
+    this.onHistoryChange(this.canUndo(), this.canRedo());
+  }
+  // ------------------------------------------------------------------
+  // Tools & style
+  // ------------------------------------------------------------------
+  setTool(tool) {
+    this.tool = tool;
+    if (tool !== "select") this.clearSelection();
+    this.svgEl.dataset.tool = tool;
+    const hints = {
+      select: "Select \u2014 click or drag a box; drag shapes to move",
+      line: "Line \u2014 drag from start to end",
+      circle: "Circle \u2014 drag outward from the center",
+      rect: "Rectangle \u2014 drag corner to corner",
+      scribble: "Scribble \u2014 draw freehand",
+      delete: "Delete \u2014 click a shape to remove it"
+    };
+    this.onStatus(hints[tool]);
+  }
+  /** Update default style; applies to the current selection when present. */
+  setStyle(partial) {
+    Object.assign(this.style, partial);
+    if (this.selection.length === 0) return;
+    for (const el of this.selection) {
+      if (partial.stroke !== void 0) el.setAttribute("stroke", partial.stroke);
+      if (partial.strokeWidth !== void 0) el.setAttribute("stroke-width", String(partial.strokeWidth));
+      if (partial.fill !== void 0 || partial.fillTransparent !== void 0) {
+        el.setAttribute("fill", this.style.fillTransparent ? "none" : this.style.fill);
+      }
+      if (partial.opacity !== void 0) el.setAttribute("opacity", String(partial.opacity));
+    }
+    this.refreshSelectionBoxes();
+    this.commit();
+  }
+  /** Read style attributes from a shape (for reflecting a selection in the UI). */
+  readShapeStyle(el) {
+    const out = {};
+    const stroke = el.getAttribute("stroke");
+    if (stroke && /^#[0-9a-f]{6}$/i.test(stroke)) out.stroke = stroke;
+    const sw = parseFloat(el.getAttribute("stroke-width") ?? "");
+    if (isFinite(sw)) out.strokeWidth = sw;
+    const fill = el.getAttribute("fill");
+    if (fill === "none") out.fillTransparent = true;
+    else if (fill && /^#[0-9a-f]{6}$/i.test(fill)) {
+      out.fillTransparent = false;
+      out.fill = fill;
+    }
+    const op = parseFloat(el.getAttribute("opacity") ?? "");
+    if (isFinite(op)) out.opacity = op;
+    return out;
+  }
+  applyStyleAttrs(el) {
+    el.setAttribute("stroke", this.style.stroke);
+    el.setAttribute("stroke-width", String(this.style.strokeWidth));
+    el.setAttribute("fill", this.style.fillTransparent ? "none" : this.style.fill);
+    el.setAttribute("stroke-linecap", "round");
+    el.setAttribute("stroke-linejoin", "round");
+    if (this.style.opacity < 1) el.setAttribute("opacity", String(this.style.opacity));
+  }
+  // ------------------------------------------------------------------
+  // Selection
+  // ------------------------------------------------------------------
+  clearSelection() {
+    if (this.selection.length === 0) return;
+    this.selection = [];
+    this.refreshSelectionBoxes();
+    this.onSelectionChange(this.selection);
+  }
+  selectAll() {
+    this.selection = this.contentChildren();
+    this.refreshSelectionBoxes();
+    this.onSelectionChange(this.selection);
+  }
+  deleteSelection() {
+    if (this.selection.length === 0) return;
+    const n = this.selection.length;
+    this.selection.forEach((el) => el.remove());
+    this.selection = [];
+    this.refreshSelectionBoxes();
+    this.onSelectionChange(this.selection);
+    this.commit();
+    this.onStatus(`Deleted ${n} shape${n === 1 ? "" : "s"}`);
+  }
+  clearAll() {
+    this.contentChildren().forEach((el) => el.remove());
+    this.clearSelection();
+    this.commit();
+    this.onStatus("Canvas cleared");
+  }
+  /** Walk up from an event target to the top-level shape that owns it. */
+  topLevelShapeFor(target) {
+    let node = target instanceof Element ? target : null;
+    while (node && node.parentElement !== this.svgEl) {
+      node = node.parentElement;
+    }
+    if (!node || node === this.overlayEl) return null;
+    return node;
+  }
+  /** Bounding box of an element in SVG user coordinates (transform-aware). */
+  svgBBox(el) {
+    const r = el.getBoundingClientRect();
+    const a = this.clientToSvg(r.left, r.top);
+    const b = this.clientToSvg(r.right, r.bottom);
+    return {
+      x: Math.min(a.x, b.x),
+      y: Math.min(a.y, b.y),
+      w: Math.abs(b.x - a.x),
+      h: Math.abs(b.y - a.y)
+    };
+  }
+  refreshSelectionBoxes() {
+    for (const box of Array.from(this.overlayEl.querySelectorAll(".svge-selbox"))) box.remove();
+    for (const el of this.selection) {
+      const bb = this.svgBBox(el);
+      const pad = 2;
+      const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("class", "svge-selbox");
+      rect.setAttribute("x", String(bb.x - pad));
+      rect.setAttribute("y", String(bb.y - pad));
+      rect.setAttribute("width", String(bb.w + pad * 2));
+      rect.setAttribute("height", String(bb.h + pad * 2));
+      this.overlayEl.appendChild(rect);
+    }
+  }
+  // ------------------------------------------------------------------
+  // Pointer interaction
+  // ------------------------------------------------------------------
+  clientToSvg(cx, cy) {
+    const ctm = this.svgEl.getScreenCTM();
+    if (ctm) {
+      const pt = new DOMPoint(cx, cy).matrixTransform(ctm.inverse());
+      return { x: pt.x, y: pt.y };
+    }
+    const r = this.svgEl.getBoundingClientRect();
+    return {
+      x: this.vb.x + (cx - r.left) / (r.width || 1) * this.vb.w,
+      y: this.vb.y + (cy - r.top) / (r.height || 1) * this.vb.h
+    };
+  }
+  eventPoint(e) {
+    return this.clientToSvg(e.clientX, e.clientY);
+  }
+  handlePointerDown(e) {
+    if (e.button !== 0) return;
+    const p = this.eventPoint(e);
+    if (this.tool === "delete") {
+      const shape = this.topLevelShapeFor(e.target);
+      if (shape) {
+        shape.remove();
+        this.commit();
+        this.onStatus("Shape deleted");
+      }
+      return;
+    }
+    if (this.tool === "select") {
+      const shape = this.topLevelShapeFor(e.target);
+      if (shape) {
+        if (e.shiftKey) {
+          if (this.selection.includes(shape)) {
+            this.selection = this.selection.filter((s) => s !== shape);
+            this.refreshSelectionBoxes();
+            this.onSelectionChange(this.selection);
+            return;
+          }
+          this.selection.push(shape);
+        } else if (!this.selection.includes(shape)) {
+          this.selection = [shape];
+        }
+        this.refreshSelectionBoxes();
+        this.onSelectionChange(this.selection);
+        this.draw = {
+          kind: "select",
+          start: p,
+          moved: false,
+          moveTargets: this.selection.map((el) => ({
+            el,
+            baseTransform: el.getAttribute("transform")
+          }))
+        };
+      } else {
+        if (!e.shiftKey) this.clearSelection();
+        const marquee = document.createElementNS(SVG_NS, "rect");
+        marquee.setAttribute("class", "svge-marquee");
+        marquee.setAttribute("x", String(p.x));
+        marquee.setAttribute("y", String(p.y));
+        this.overlayEl.appendChild(marquee);
+        this.draw = { kind: "select", start: p, marqueeEl: marquee };
+      }
+    } else {
+      let el;
+      switch (this.tool) {
+        case "line": {
+          el = document.createElementNS(SVG_NS, "line");
+          el.setAttribute("x1", String(round(p.x)));
+          el.setAttribute("y1", String(round(p.y)));
+          el.setAttribute("x2", String(round(p.x)));
+          el.setAttribute("y2", String(round(p.y)));
+          break;
+        }
+        case "circle": {
+          el = document.createElementNS(SVG_NS, "circle");
+          el.setAttribute("cx", String(round(p.x)));
+          el.setAttribute("cy", String(round(p.y)));
+          el.setAttribute("r", "0");
+          break;
+        }
+        case "rect": {
+          el = document.createElementNS(SVG_NS, "rect");
+          el.setAttribute("x", String(round(p.x)));
+          el.setAttribute("y", String(round(p.y)));
+          el.setAttribute("width", "0");
+          el.setAttribute("height", "0");
+          break;
+        }
+        default: {
+          el = document.createElementNS(SVG_NS, "path");
+          el.setAttribute("d", `M${round(p.x)},${round(p.y)}`);
+          break;
+        }
+      }
+      this.applyStyleAttrs(el);
+      this.svgEl.insertBefore(el, this.overlayEl);
+      this.draw = { kind: this.tool, el, start: p, points: [p] };
+    }
+    if (this.draw) {
+      window.addEventListener("pointermove", this.boundPointerMove);
+      window.addEventListener("pointerup", this.boundPointerUp);
+      e.preventDefault();
+    }
+  }
+  handlePointerMove(e) {
+    if (!this.draw) return;
+    const p = this.eventPoint(e);
+    const d = this.draw;
+    switch (d.kind) {
+      case "select": {
+        if (d.marqueeEl) {
+          d.marqueeEl.setAttribute("x", String(Math.min(d.start.x, p.x)));
+          d.marqueeEl.setAttribute("y", String(Math.min(d.start.y, p.y)));
+          d.marqueeEl.setAttribute("width", String(Math.abs(p.x - d.start.x)));
+          d.marqueeEl.setAttribute("height", String(Math.abs(p.y - d.start.y)));
+        } else if (d.moveTargets) {
+          const dx = p.x - d.start.x;
+          const dy = p.y - d.start.y;
+          if (Math.abs(dx) + Math.abs(dy) > 0.01) d.moved = true;
+          for (const t of d.moveTargets) {
+            const move = `translate(${round(dx)} ${round(dy)})`;
+            t.el.setAttribute("transform", t.baseTransform ? `${move} ${t.baseTransform}` : move);
+          }
+          this.refreshSelectionBoxes();
+        }
+        break;
+      }
+      case "line": {
+        d.el.setAttribute("x2", String(round(p.x)));
+        d.el.setAttribute("y2", String(round(p.y)));
+        break;
+      }
+      case "circle": {
+        const r = Math.hypot(p.x - d.start.x, p.y - d.start.y);
+        d.el.setAttribute("r", String(round(r)));
+        break;
+      }
+      case "rect": {
+        d.el.setAttribute("x", String(round(Math.min(d.start.x, p.x))));
+        d.el.setAttribute("y", String(round(Math.min(d.start.y, p.y))));
+        d.el.setAttribute("width", String(round(Math.abs(p.x - d.start.x))));
+        d.el.setAttribute("height", String(round(Math.abs(p.y - d.start.y))));
+        break;
+      }
+      case "scribble": {
+        d.points.push(p);
+        d.el.setAttribute("d", pathFromPoints(d.points));
+        break;
+      }
+    }
+  }
+  handlePointerUp(e) {
+    window.removeEventListener("pointermove", this.boundPointerMove);
+    window.removeEventListener("pointerup", this.boundPointerUp);
+    const d = this.draw;
+    this.draw = null;
+    if (!d) return;
+    if (d.kind === "select") {
+      if (d.marqueeEl) {
+        const mx = parseFloat(d.marqueeEl.getAttribute("x") ?? "0");
+        const my = parseFloat(d.marqueeEl.getAttribute("y") ?? "0");
+        const mw = parseFloat(d.marqueeEl.getAttribute("width") ?? "0");
+        const mh = parseFloat(d.marqueeEl.getAttribute("height") ?? "0");
+        d.marqueeEl.remove();
+        if (mw > 1 || mh > 1) {
+          const hits = this.contentChildren().filter((el2) => {
+            const bb = this.svgBBox(el2);
+            return bb.x < mx + mw && bb.x + bb.w > mx && bb.y < my + mh && bb.y + bb.h > my;
+          });
+          this.selection = e.shiftKey ? [...this.selection, ...hits.filter((h) => !this.selection.includes(h))] : hits;
+          this.refreshSelectionBoxes();
+          this.onSelectionChange(this.selection);
+          this.onStatus(`${this.selection.length} shape${this.selection.length === 1 ? "" : "s"} selected`);
+        }
+      } else if (d.moved) {
+        this.commit();
+        this.onStatus("Moved");
+      }
+      return;
+    }
+    const el = d.el;
+    const degenerate = d.kind === "line" && Math.hypot(
+      parseFloat(el.getAttribute("x2") ?? "0") - parseFloat(el.getAttribute("x1") ?? "0"),
+      parseFloat(el.getAttribute("y2") ?? "0") - parseFloat(el.getAttribute("y1") ?? "0")
+    ) < 0.5 || d.kind === "circle" && parseFloat(el.getAttribute("r") ?? "0") < 0.5 || d.kind === "rect" && parseFloat(el.getAttribute("width") ?? "0") < 0.5 && parseFloat(el.getAttribute("height") ?? "0") < 0.5 || d.kind === "scribble" && (d.points?.length ?? 0) < 2;
+    if (degenerate) {
+      el.remove();
+      return;
+    }
+    this.commit();
+    this.onStatus(`${d.kind.charAt(0).toUpperCase() + d.kind.slice(1)} added`);
+  }
+};
+function round(n) {
+  return Math.round(n * 100) / 100;
+}
+function pathFromPoints(points) {
+  if (points.length === 0) return "";
+  let d = `M${round(points[0].x)},${round(points[0].y)}`;
+  if (points.length === 1) return d;
+  for (let i = 1; i < points.length; i++) {
+    const pt = points[i];
+    if (i === 1) {
+      d += ` L${round(pt.x)},${round(pt.y)}`;
+    } else {
+      const prev = points[i - 1];
+      const midX = (prev.x + pt.x) / 2;
+      const midY = (prev.y + pt.y) / 2;
+      d += ` Q${round(prev.x)},${round(prev.y)} ${round(midX)},${round(midY)}`;
+    }
+  }
+  if (points.length > 2) {
+    const last = points[points.length - 1];
+    d += ` L${round(last.x)},${round(last.y)}`;
+  }
+  return d;
+}
+
+// src/modal.ts
+var import_obsidian = require("obsidian");
+var TOOLS = [
+  { tool: "select", icon: "mouse-pointer", label: "Select & move", key: "v" },
+  { tool: "line", icon: "minus", label: "Line", key: "l" },
+  { tool: "circle", icon: "circle", label: "Circle", key: "c" },
+  { tool: "rect", icon: "square", label: "Rectangle", key: "r" },
+  { tool: "scribble", icon: "pencil", label: "Scribble (freehand)", key: "p" },
+  { tool: "delete", icon: "eraser", label: "Delete shape", key: "x" }
+];
+var SvgEditorModal = class extends import_obsidian.Modal {
+  constructor(app, initialSource, onSaveCb) {
+    super(app);
+    this.initialSource = initialSource;
+    this.onSaveCb = onSaveCb;
+    this.mode = "visual";
+    this.tabButtons = {};
+    this.toolButtons = {};
+  }
+  onOpen() {
+    this.modalEl.addClass("svge-modal");
+    const { contentEl } = this;
+    contentEl.addClass("svge-content");
+    const header = contentEl.createDiv({ cls: "svge-header" });
+    header.createDiv({ cls: "svge-title", text: "SVG Editor" });
+    const tabs = header.createDiv({ cls: "svge-tabs" });
+    for (const m of ["visual", "code"]) {
+      const btn = tabs.createEl("button", {
+        cls: "svge-tab",
+        text: m === "visual" ? "Visual" : "Code"
+      });
+      btn.addEventListener("click", () => this.setMode(m));
+      this.tabButtons[m] = btn;
+    }
+    header.createDiv({ cls: "svge-spacer" });
+    const sizeWrap = header.createDiv({ cls: "svge-size", attr: { "aria-label": "Canvas size" } });
+    this.widthInput = sizeWrap.createEl("input", {
+      type: "number",
+      attr: { min: "10", max: "10000", placeholder: "W" }
+    });
+    sizeWrap.createSpan({ text: "\xD7" });
+    this.heightInput = sizeWrap.createEl("input", {
+      type: "number",
+      attr: { min: "10", max: "10000", placeholder: "H" }
+    });
+    const applySize = () => {
+      const w = parseFloat(this.widthInput.value);
+      const h = parseFloat(this.heightInput.value);
+      if (w > 0 && h > 0) this.core.setCanvasSize(w, h);
+    };
+    this.widthInput.addEventListener("change", applySize);
+    this.heightInput.addEventListener("change", applySize);
+    const actions = header.createDiv({ cls: "svge-actions" });
+    const cancelBtn = actions.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+    const saveBtn = actions.createEl("button", { cls: "mod-cta", text: "Save" });
+    saveBtn.addEventListener("click", () => void this.save());
+    const body = contentEl.createDiv({ cls: "svge-body" });
+    this.visualEl = body.createDiv({ cls: "svge-visual" });
+    const main = this.visualEl.createDiv({ cls: "svge-main" });
+    const toolbar = main.createDiv({ cls: "svge-toolbar" });
+    for (const t of TOOLS) {
+      const btn = toolbar.createEl("button", {
+        cls: "svge-tool",
+        attr: { "aria-label": `${t.label} (${t.key.toUpperCase()})`, "data-tool": t.tool }
+      });
+      (0, import_obsidian.setIcon)(btn, t.icon);
+      btn.addEventListener("click", () => this.setTool(t.tool));
+      this.toolButtons[t.tool] = btn;
+    }
+    const canvasWrap = main.createDiv({ cls: "svge-canvas-wrap" });
+    const props = this.visualEl.createDiv({ cls: "svge-props" });
+    this.selectionNoteEl = props.createDiv({ cls: "svge-selection-note" });
+    const strokeGroup = props.createDiv({ cls: "svge-prop-group", attr: { "aria-label": "Stroke" } });
+    strokeGroup.createSpan({ cls: "svge-prop-label", text: "Stroke" });
+    this.strokeInput = strokeGroup.createEl("input", { type: "color" });
+    this.strokeInput.value = "#000000";
+    this.strokeInput.addEventListener(
+      "input",
+      () => this.core.setStyle({ stroke: this.strokeInput.value })
+    );
+    this.strokeWidthInput = strokeGroup.createEl("input", {
+      type: "range",
+      attr: { min: "1", max: "50", step: "1" }
+    });
+    this.strokeWidthInput.value = "2";
+    this.strokeWidthValue = strokeGroup.createSpan({ cls: "svge-prop-value", text: "2" });
+    this.strokeWidthInput.addEventListener("input", () => {
+      this.strokeWidthValue.setText(this.strokeWidthInput.value);
+      this.core.setStyle({ strokeWidth: parseFloat(this.strokeWidthInput.value) });
+    });
+    const fillGroup = props.createDiv({ cls: "svge-prop-group", attr: { "aria-label": "Fill" } });
+    fillGroup.createSpan({ cls: "svge-prop-label", text: "Fill" });
+    this.fillInput = fillGroup.createEl("input", { type: "color" });
+    this.fillInput.value = "#ffffff";
+    this.fillInput.addEventListener("input", () => {
+      this.fillTransparentInput.checked = false;
+      this.core.setStyle({ fill: this.fillInput.value, fillTransparent: false });
+    });
+    const transparentLabel = fillGroup.createEl("label", { cls: "svge-checkbox" });
+    this.fillTransparentInput = transparentLabel.createEl("input", { type: "checkbox" });
+    this.fillTransparentInput.checked = true;
+    transparentLabel.createSpan({ text: "none" });
+    this.fillTransparentInput.addEventListener(
+      "change",
+      () => this.core.setStyle({ fillTransparent: this.fillTransparentInput.checked })
+    );
+    const opacityGroup = props.createDiv({ cls: "svge-prop-group", attr: { "aria-label": "Opacity" } });
+    opacityGroup.createSpan({ cls: "svge-prop-label", text: "Opacity" });
+    this.opacityInput = opacityGroup.createEl("input", {
+      type: "range",
+      attr: { min: "0", max: "100", step: "1" }
+    });
+    this.opacityInput.value = "100";
+    this.opacityValue = opacityGroup.createSpan({ cls: "svge-prop-value", text: "100" });
+    this.opacityInput.addEventListener("input", () => {
+      this.opacityValue.setText(this.opacityInput.value);
+      this.core.setStyle({ opacity: parseFloat(this.opacityInput.value) / 100 });
+    });
+    const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
+    this.undoBtn = histGroup.createEl("button", { attr: { "aria-label": "Undo (Ctrl+Z)" } });
+    (0, import_obsidian.setIcon)(this.undoBtn, "undo-2");
+    this.undoBtn.addEventListener("click", () => this.core.undo());
+    this.redoBtn = histGroup.createEl("button", { attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
+    (0, import_obsidian.setIcon)(this.redoBtn, "redo-2");
+    this.redoBtn.addEventListener("click", () => this.core.redo());
+    const clearBtn = histGroup.createEl("button", { attr: { "aria-label": "Clear canvas" } });
+    (0, import_obsidian.setIcon)(clearBtn, "trash-2");
+    clearBtn.addEventListener("click", () => this.core.clearAll());
+    this.codeEl = body.createDiv({ cls: "svge-code" });
+    this.codeArea = this.codeEl.createEl("textarea", {
+      cls: "svge-code-area",
+      attr: { spellcheck: "false", placeholder: "<svg \u2026>" }
+    });
+    this.codeErrorEl = this.codeEl.createDiv({ cls: "svge-code-error" });
+    this.statusEl = contentEl.createDiv({ cls: "svge-status", text: "Ready" });
+    this.core = new SvgEditorCore(canvasWrap);
+    this.core.onStatus = (msg) => this.statusEl.setText(msg);
+    this.core.onHistoryChange = (canUndo, canRedo) => {
+      this.undoBtn.disabled = !canUndo;
+      this.redoBtn.disabled = !canRedo;
+    };
+    this.core.onSizeChange = (w, h) => {
+      this.widthInput.value = String(w);
+      this.heightInput.value = String(h);
+    };
+    this.core.onSelectionChange = (sel) => this.reflectSelection(sel);
+    try {
+      this.core.load(this.initialSource.trim() ? this.initialSource : emptySvgSource());
+      this.setMode("visual");
+    } catch (e) {
+      this.core.load(emptySvgSource());
+      this.setMode("code");
+      this.codeArea.value = this.initialSource;
+      this.showCodeError(e instanceof Error ? e.message : String(e));
+    }
+    this.setTool("select");
+    this.scope.register(["Mod"], "z", (evt) => {
+      if (this.mode !== "visual") return true;
+      evt.preventDefault();
+      this.core.undo();
+      return false;
+    });
+    this.scope.register(["Mod", "Shift"], "z", (evt) => {
+      if (this.mode !== "visual") return true;
+      evt.preventDefault();
+      this.core.redo();
+      return false;
+    });
+    this.scope.register(["Mod"], "y", (evt) => {
+      if (this.mode !== "visual") return true;
+      evt.preventDefault();
+      this.core.redo();
+      return false;
+    });
+    this.scope.register(["Mod"], "a", () => {
+      if (this.mode !== "visual") return true;
+      this.core.selectAll();
+      return false;
+    });
+    this.scope.register(["Mod"], "Enter", () => {
+      void this.save();
+      return false;
+    });
+    this.modalEl.addEventListener("keydown", (evt) => this.handleKeydown(evt));
+  }
+  handleKeydown(evt) {
+    if (this.mode !== "visual") return;
+    const target = evt.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
+      return;
+    }
+    if (evt.key === "Delete" || evt.key === "Backspace") {
+      this.core.deleteSelection();
+      evt.preventDefault();
+      return;
+    }
+    if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+    const tool = TOOLS.find((t) => t.key === evt.key.toLowerCase());
+    if (tool) {
+      this.setTool(tool.tool);
+      evt.preventDefault();
+    }
+  }
+  setTool(tool) {
+    this.core.setTool(tool);
+    for (const [name, btn] of Object.entries(this.toolButtons)) {
+      btn.toggleClass("is-active", name === tool);
+    }
+  }
+  /** Reflect the current selection into the style controls. */
+  reflectSelection(sel) {
+    if (sel.length === 0) {
+      this.selectionNoteEl.setText("");
+      return;
+    }
+    this.selectionNoteEl.setText(
+      sel.length === 1 ? "1 shape \u2014 edits apply to it" : `${sel.length} shapes \u2014 edits apply to all`
+    );
+    if (sel.length !== 1) return;
+    const s = this.core.readShapeStyle(sel[0]);
+    if (s.stroke) this.strokeInput.value = s.stroke;
+    if (s.strokeWidth !== void 0) {
+      this.strokeWidthInput.value = String(s.strokeWidth);
+      this.strokeWidthValue.setText(String(s.strokeWidth));
+    }
+    if (s.fillTransparent !== void 0) this.fillTransparentInput.checked = s.fillTransparent;
+    if (s.fill) this.fillInput.value = s.fill;
+    const opacity = s.opacity ?? 1;
+    this.opacityInput.value = String(Math.round(opacity * 100));
+    this.opacityValue.setText(String(Math.round(opacity * 100)));
+  }
+  setMode(mode) {
+    if (mode === "code" && this.mode !== "code") {
+      this.codeArea.value = this.core.serialize(true);
+    }
+    if (mode === "visual" && this.mode === "code") {
+      if (!this.applyCode()) return false;
+    }
+    this.mode = mode;
+    this.visualEl.style.display = mode === "visual" ? "" : "none";
+    this.codeEl.style.display = mode === "code" ? "" : "none";
+    this.tabButtons["visual"].toggleClass("is-active", mode === "visual");
+    this.tabButtons["code"].toggleClass("is-active", mode === "code");
+    this.statusEl.setText(mode === "code" ? "Editing SVG source" : "Ready");
+    if (mode === "code") this.codeArea.focus();
+    return true;
+  }
+  /** Parse the code pane back into the canvas. Returns false on parse errors. */
+  applyCode() {
+    try {
+      this.core.loadFromCode(this.codeArea.value);
+      this.showCodeError(null);
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.showCodeError(msg);
+      new import_obsidian.Notice(`SVG Editor: ${msg}`);
+      return false;
+    }
+  }
+  showCodeError(msg) {
+    this.codeErrorEl.setText(msg ?? "");
+    this.codeErrorEl.toggleClass("is-visible", !!msg);
+  }
+  async save() {
+    if (this.mode === "code" && !this.applyCode()) return;
+    const source = this.core.serialize(true);
+    try {
+      await this.onSaveCb(source);
+    } finally {
+      this.close();
+    }
+  }
+  onClose() {
+    this.core?.destroy();
+    this.contentEl.empty();
+  }
+};
+
+// src/selftest.ts
+var import_obsidian2 = require("obsidian");
+var REPORT_PATH = "SVGE-SelfTest-Report.md";
+var TARGET_PATH = "SVGE-SelfTest-Target.md";
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function firePointer(target, type, x, y, opts = {}) {
+  target.dispatchEvent(
+    new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      pointerId: 1,
+      isPrimary: true,
+      button: 0,
+      buttons: type === "pointerup" ? 0 : 1,
+      ...opts
+    })
+  );
+}
+async function runSelfTest(plugin) {
+  const results = [];
+  const check = (name, pass, detail = "") => {
+    results.push({ name, pass, detail });
+  };
+  let modal = null;
+  let savedSource = "";
+  try {
+    modal = new SvgEditorModal(plugin.app, "", (src) => {
+      savedSource = src;
+    });
+    modal.open();
+    await sleep(150);
+    const core = modal.core;
+    const svg = core.svgEl;
+    const rect = svg.getBoundingClientRect();
+    check("modal canvas renders", rect.width > 50 && rect.height > 50, `${Math.round(rect.width)}\xD7${Math.round(rect.height)}`);
+    const pt = (fx, fy) => ({
+      x: rect.left + rect.width * fx,
+      y: rect.top + rect.height * fy
+    });
+    const drag = (from, to) => {
+      firePointer(svg, "pointerdown", from.x, from.y);
+      firePointer(window, "pointermove", (from.x + to.x) / 2, (from.y + to.y) / 2);
+      firePointer(window, "pointermove", to.x, to.y);
+      firePointer(window, "pointerup", to.x, to.y);
+    };
+    modal.setTool("rect");
+    drag(pt(0.1, 0.1), pt(0.3, 0.3));
+    check("rect tool draws <rect>", core.contentChildren().length === 1 && core.contentChildren()[0]?.tagName === "rect", core.contentChildren().map((c) => c.tagName).join(","));
+    modal.setTool("circle");
+    drag(pt(0.6, 0.5), pt(0.7, 0.5));
+    modal.setTool("line");
+    drag(pt(0.1, 0.8), pt(0.4, 0.9));
+    modal.setTool("scribble");
+    drag(pt(0.5, 0.8), pt(0.8, 0.85));
+    const tags = core.contentChildren().map((c) => c.tagName).sort().join(",");
+    check("all four shapes drawn", tags === "circle,line,path,rect", tags);
+    modal.setTool("select");
+    const shape = core.contentChildren()[0];
+    const sr = shape.getBoundingClientRect();
+    const edge = { x: sr.left + 1, y: sr.top + sr.height / 2 };
+    firePointer(shape, "pointerdown", edge.x, edge.y);
+    firePointer(window, "pointermove", edge.x + 30, edge.y + 20);
+    firePointer(window, "pointerup", edge.x + 30, edge.y + 20);
+    check("click selects shape", core.selection.length === 1, `selection=${core.selection.length}`);
+    check("drag moves shape (transform set)", (shape.getAttribute("transform") ?? "").includes("translate"), shape.getAttribute("transform") ?? "(none)");
+    const before = shape.getAttribute("stroke");
+    core.setStyle({ stroke: "#ff0000" });
+    check("style change applies to selection", shape.getAttribute("stroke") === "#ff0000", `${before} \u2192 ${shape.getAttribute("stroke")}`);
+    core.undo();
+    const strokeAfterUndo = core.contentChildren()[0]?.getAttribute("stroke");
+    check("undo reverts style change", strokeAfterUndo === before, `stroke=${strokeAfterUndo}`);
+    core.redo();
+    const strokeAfterRedo = core.contentChildren()[0]?.getAttribute("stroke");
+    check("redo re-applies style change", strokeAfterRedo === "#ff0000", `stroke=${strokeAfterRedo}`);
+    modal.setTool("select");
+    core.selectAll();
+    const countBefore = core.contentChildren().length;
+    core.deleteSelection();
+    check("delete selection empties canvas", core.contentChildren().length === 0, `${countBefore} \u2192 0`);
+    core.undo();
+    check("undo restores deleted shapes", core.contentChildren().length === countBefore, `count=${core.contentChildren().length}`);
+    const toCode = modal.setMode("code");
+    check("switch to code mode", toCode && modal.codeArea.value.includes("<svg"), modal.codeArea.value.slice(0, 60));
+    modal.codeArea.value = modal.codeArea.value.replace(
+      "</svg>",
+      '  <rect x="5" y="5" width="20" height="20" fill="#00aa00"/>\n</svg>'
+    );
+    const backToVisual = modal.setMode("visual");
+    check("code edits parse back into visual mode", backToVisual && core.contentChildren().length === countBefore + 1, `count=${core.contentChildren().length}`);
+    modal.setMode("code");
+    const goodCode = modal.codeArea.value;
+    modal.codeArea.value = "<svg><rect</svg>";
+    const rejected = !modal.setMode("visual");
+    check("invalid code rejected (stays in code mode)", rejected && modal.mode === "code", `mode=${modal.mode}`);
+    modal.codeArea.value = goodCode;
+    modal.setMode("visual");
+    core.setCanvasSize(640, 480);
+    check("canvas resize", core.serialize(true).includes('viewBox="0 0 640 480"'), core.serialize(true).split("\n")[0]);
+    await modal.save();
+    modal = null;
+    check(
+      "save returns svg source",
+      savedSource.startsWith("<svg") && savedSource.includes("viewBox") && savedSource.split("\n").length > 2,
+      savedSource.split("\n")[0] ?? ""
+    );
+    check(
+      "no editor attrs leak into saved source",
+      !savedSource.includes("data-tool") && !savedSource.includes("aspect-ratio") && !savedSource.includes("svge-"),
+      savedSource.split("\n")[0] ?? ""
+    );
+    const vault2 = plugin.app.vault;
+    const existingTarget = vault2.getAbstractFileByPath(TARGET_PATH);
+    const targetBody = '# Self-test target\n\n```svg\n<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" stroke="#000000" fill="none"/></svg>\n```\n';
+    if (existingTarget) {
+      await vault2.adapter.write(TARGET_PATH, targetBody);
+    } else {
+      await vault2.create(TARGET_PATH, targetBody);
+    }
+    const oldInner = targetBody.split("\n")[3];
+    const wrote = await plugin.replaceBlockInFile(TARGET_PATH, 2, 4, oldInner, savedSource);
+    const newBody = await vault2.adapter.read(TARGET_PATH);
+    check("write-back replaces block body", wrote && newBody.includes(savedSource.split("\n")[0]) && newBody.includes("```svg"), `wrote=${wrote}`);
+    const wrote2 = await plugin.replaceBlockInFile(TARGET_PATH, 0, 1, savedSource, savedSource + "\n<!-- fallback -->");
+    const body2 = await vault2.adapter.read(TARGET_PATH);
+    check("stale section info falls back to search", wrote2 && body2.includes("<!-- fallback -->"), `wrote=${wrote2}`);
+    const host = document.body.createDiv();
+    host.style.position = "fixed";
+    host.style.left = "-9999px";
+    const comp = new import_obsidian2.Component();
+    try {
+      await import_obsidian2.MarkdownRenderer.render(
+        plugin.app,
+        '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>\n```',
+        host,
+        TARGET_PATH,
+        comp
+      );
+      await sleep(100);
+      const block = host.querySelector(".svge-block");
+      check("code block processor renders svg", !!block?.querySelector("svg circle"), block ? "block found" : "no .svge-block");
+      check("edit button present on rendered block", !!block?.querySelector(".svge-edit-btn"), "");
+    } finally {
+      comp.unload();
+      host.remove();
+    }
+    const host2 = document.body.createDiv();
+    host2.style.position = "fixed";
+    host2.style.left = "-9999px";
+    const comp2 = new import_obsidian2.Component();
+    try {
+      await import_obsidian2.MarkdownRenderer.render(
+        plugin.app,
+        '```svg\n<svg xmlns="http://www.w3.org/2000/svg"><script>window.__svge_pwned=1<\/script><rect width="5" height="5" onclick="window.__svge_pwned=2"/></svg>\n```',
+        host2,
+        TARGET_PATH,
+        comp2
+      );
+      await sleep(100);
+      const rendered = host2.querySelector(".svge-block svg");
+      check(
+        "scripts/handlers stripped from preview",
+        !!rendered && !rendered.querySelector("script") && !rendered.querySelector("[onclick]"),
+        rendered?.outerHTML.slice(0, 80) ?? "no svg"
+      );
+    } finally {
+      comp2.unload();
+      host2.remove();
+    }
+  } catch (e) {
+    check("self-test crashed", false, e instanceof Error ? `${e.message}
+${e.stack ?? ""}` : String(e));
+  } finally {
+    modal?.close();
+  }
+  const passed = results.filter((r) => r.pass).length;
+  const lines = [
+    "# SVG Editor self-test report",
+    "",
+    `**${passed}/${results.length} checks passed** \u2014 ${passed === results.length ? "PASS" : "FAIL"}`,
+    "",
+    "| # | Check | Result | Detail |",
+    "|---|-------|--------|--------|",
+    ...results.map((r, i) => `| ${i + 1} | ${r.name} | ${r.pass ? "\u2705 pass" : "\u274C FAIL"} | ${r.detail.replace(/\|/g, "\\|").replace(/\n/g, " ")} |`),
+    ""
+  ];
+  const report = lines.join("\n");
+  const vault = plugin.app.vault;
+  if (vault.getAbstractFileByPath(REPORT_PATH)) {
+    await vault.adapter.write(REPORT_PATH, report);
+  } else {
+    await vault.create(REPORT_PATH, report);
+  }
+  new import_obsidian2.Notice(`SVG Editor self-test: ${passed}/${results.length} passed`);
+}
+
+// src/main.ts
+var SvgEditorPlugin = class extends import_obsidian3.Plugin {
+  async onload() {
+    this.registerMarkdownCodeBlockProcessor(
+      "svg",
+      (source, el, ctx) => this.renderSvgBlock(source, el, ctx)
+    );
+    this.addCommand({
+      id: "insert-svg-drawing",
+      name: "Insert new SVG drawing",
+      editorCallback: (editor) => {
+        new SvgEditorModal(this.app, "", (newSource) => {
+          const cur = editor.getCursor();
+          const prefix = cur.ch === 0 ? "" : "\n";
+          editor.replaceRange(`${prefix}\`\`\`svg
+${newSource}
+\`\`\`
+`, cur);
+        }).open();
+      }
+    });
+    this.addCommand({
+      id: "edit-svg-at-cursor",
+      name: "Edit SVG block at cursor",
+      editorCallback: (editor) => this.editBlockAtCursor(editor)
+    });
+    this.addCommand({
+      id: "self-test",
+      name: "Run self-test (writes a report note)",
+      callback: () => void runSelfTest(this)
+    });
+  }
+  // ------------------------------------------------------------------
+  // Reading / live-preview rendering of ```svg blocks
+  // ------------------------------------------------------------------
+  renderSvgBlock(source, el, ctx) {
+    el.addClass("svge-block");
+    if (source.trim()) {
+      try {
+        const svg = parseSvgSource(source);
+        el.appendChild(document.importNode(svg, true));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        el.createDiv({ cls: "svge-block-error", text: `Invalid SVG: ${msg}` });
+      }
+    } else {
+      el.createDiv({ cls: "svge-block-empty", text: "Empty SVG \u2014 click to draw" });
+    }
+    const openEditor = () => {
+      const info = ctx.getSectionInfo(el);
+      if (!info) {
+        new import_obsidian3.Notice("SVG Editor: cannot locate this block in the note (try editing in source mode).");
+        return;
+      }
+      new SvgEditorModal(this.app, source, async (newSource) => {
+        const ok = await this.replaceBlockInFile(
+          ctx.sourcePath,
+          info.lineStart,
+          info.lineEnd,
+          source,
+          newSource
+        );
+        if (!ok) new import_obsidian3.Notice("SVG Editor: could not write changes back \u2014 the note changed under us.");
+      }).open();
+    };
+    const btn = el.createEl("button", {
+      cls: "svge-edit-btn",
+      attr: { "aria-label": "Edit SVG" }
+    });
+    (0, import_obsidian3.setIcon)(btn, "pencil");
+    btn.addEventListener("click", openEditor);
+    el.addEventListener("dblclick", openEditor);
+  }
+  /**
+   * Replace the body of the ```svg block spanning [lineStart, lineEnd]
+   * (fence lines inclusive). Falls back to searching for a unique block
+   * whose body matches oldSource if the recorded lines have drifted.
+   */
+  async replaceBlockInFile(path, lineStart, lineEnd, oldSource, newSource) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian3.TFile)) return false;
+    let ok = false;
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split("\n");
+      const openFenceRe = /^\s*(`{3,}|~{3,})\s*svg\s*$/i;
+      const matchesAt = (s2, e2) => s2 >= 0 && e2 < lines.length && e2 > s2 && openFenceRe.test(lines[s2]) && lines.slice(s2 + 1, e2).join("\n").trim() === oldSource.trim();
+      let s = lineStart;
+      let e = lineEnd;
+      if (!matchesAt(s, e)) {
+        const candidates = [];
+        for (let i = 0; i < lines.length; i++) {
+          const m = lines[i].match(openFenceRe);
+          if (!m) continue;
+          const fenceChar = m[1][0];
+          const fenceLen = m[1].length;
+          for (let j = i + 1; j < lines.length; j++) {
+            const t = lines[j].trim();
+            if (t.length >= fenceLen && [...t].every((c) => c === fenceChar)) {
+              if (matchesAt(i, j)) candidates.push([i, j]);
+              break;
+            }
+          }
+        }
+        if (candidates.length !== 1) return data;
+        [s, e] = candidates[0];
+      }
+      ok = true;
+      return [...lines.slice(0, s + 1), ...newSource.split("\n"), ...lines.slice(e)].join("\n");
+    });
+    return ok;
+  }
+  // ------------------------------------------------------------------
+  // Source-mode editing
+  // ------------------------------------------------------------------
+  editBlockAtCursor(editor) {
+    const cur = editor.getCursor().line;
+    const openFenceRe = /^\s*(`{3,}|~{3,})\s*svg\s*$/i;
+    let open = -1;
+    let fenceChar = "";
+    let fenceLen = 0;
+    for (let i = cur; i >= 0; i--) {
+      const m = editor.getLine(i).match(openFenceRe);
+      if (m) {
+        open = i;
+        fenceChar = m[1][0];
+        fenceLen = m[1].length;
+        break;
+      }
+    }
+    if (open === -1) {
+      new import_obsidian3.Notice("SVG Editor: cursor is not inside a ```svg code block.");
+      return;
+    }
+    let close = -1;
+    for (let j = open + 1; j < editor.lineCount(); j++) {
+      const t = editor.getLine(j).trim();
+      if (t.length >= fenceLen && [...t].every((c) => c === fenceChar)) {
+        close = j;
+        break;
+      }
+    }
+    if (close === -1 || cur > close) {
+      new import_obsidian3.Notice("SVG Editor: cursor is not inside a ```svg code block.");
+      return;
+    }
+    const source = editor.getRange({ line: open + 1, ch: 0 }, { line: close, ch: 0 }).replace(/\n$/, "");
+    new SvgEditorModal(this.app, source, (newSource) => {
+      editor.replaceRange(`${newSource}
+`, { line: open + 1, ch: 0 }, { line: close, ch: 0 });
+    }).open();
+  }
+};

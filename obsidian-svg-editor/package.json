@@ -1,0 +1,17 @@
+{
+  "name": "obsidian-svg-editor",
+  "version": "0.1.0",
+  "description": "Visual inline SVG editor for Obsidian svg code blocks, with a code mode",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "builtin-modules": "^5.3.0",
+    "esbuild": "^0.28.1",
+    "obsidian": "^1.13.1",
+    "typescript": "^6.0.3"
+  }
+}
