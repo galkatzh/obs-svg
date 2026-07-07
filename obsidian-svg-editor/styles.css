@@ -52,6 +52,11 @@
     display: inline-block;
 }
 
+/* Second hover button: convert between inline block and embedded file. */
+.svge-convert-btn {
+    right: 44px;
+}
+
 /* No hover on touch screens: keep the edit button always visible. */
 body.is-mobile .svge-edit-btn {
     opacity: 1;

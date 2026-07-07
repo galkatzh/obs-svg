@@ -100,10 +100,12 @@ export default class SvgEditorPlugin extends Plugin {
 
     private renderSvgBlock(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
         el.addClass("svge-block");
+        let parsedOk = false;
         if (source.trim()) {
             try {
                 const svg = parseSvgSource(source);
                 el.appendChild(document.importNode(svg, true));
+                parsedOk = true;
             } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
                 el.createDiv({ cls: "svge-block-error", text: `Invalid SVG: ${msg}` });
@@ -137,6 +139,22 @@ export default class SvgEditorPlugin extends Plugin {
         setIcon(btn, "pencil");
         btn.addEventListener("click", openEditor);
         el.addEventListener("dblclick", openEditor);
+
+        if (parsedOk) {
+            const convertBtn = el.createEl("button", {
+                cls: "svge-edit-btn svge-convert-btn",
+                attr: { "aria-label": "Convert to embedded .svg file" },
+            });
+            setIcon(convertBtn, "file-output");
+            convertBtn.addEventListener("click", () => {
+                const info = ctx.getSectionInfo(el);
+                if (!info) {
+                    new Notice("SVG Editor: cannot locate this block in the note.");
+                    return;
+                }
+                void this.convertBlockToEmbed(ctx.sourcePath, info.lineStart, info.lineEnd, source);
+            });
+        }
     }
 
     /**
@@ -150,6 +168,24 @@ export default class SvgEditorPlugin extends Plugin {
         lineEnd: number,
         oldSource: string,
         newSource: string
+    ): Promise<boolean> {
+        return this.rewriteBlock(path, lineStart, lineEnd, oldSource, (lines, s, e) => [
+            ...lines.slice(0, s + 1),
+            ...newSource.split("\n"),
+            ...lines.slice(e),
+        ]);
+    }
+
+    /**
+     * Locate the ```svg block spanning [lineStart, lineEnd] (with the same
+     * stale-line fallback as replaceBlockInFile) and rebuild the note's lines.
+     */
+    private async rewriteBlock(
+        path: string,
+        lineStart: number,
+        lineEnd: number,
+        oldSource: string,
+        rebuild: (lines: string[], s: number, e: number) => string[]
     ): Promise<boolean> {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (!(file instanceof TFile)) return false;
@@ -188,7 +224,7 @@ export default class SvgEditorPlugin extends Plugin {
             }
 
             ok = true;
-            return [...lines.slice(0, s + 1), ...newSource.split("\n"), ...lines.slice(e)].join("\n");
+            return rebuild(lines, s, e).join("\n");
         });
         return ok;
     }
@@ -217,6 +253,123 @@ export default class SvgEditorPlugin extends Plugin {
         });
         modal.open();
         return modal;
+    }
+
+    // ------------------------------------------------------------------
+    // Inline block ⇄ embedded file conversion
+    // ------------------------------------------------------------------
+
+    /**
+     * Save an inline ```svg block as a vault .svg file and replace the whole
+     * block (fences included) with an embed link. Returns the created file.
+     */
+    async convertBlockToEmbed(
+        sourcePath: string,
+        lineStart: number,
+        lineEnd: number,
+        source: string
+    ): Promise<TFile | null> {
+        let file: TFile;
+        try {
+            file = await this.createSvgAttachment(source, sourcePath);
+        } catch (e) {
+            new Notice(`SVG Editor: could not create the .svg file: ${e instanceof Error ? e.message : e}`);
+            return null;
+        }
+        const embed = this.embedLinkFor(file, sourcePath);
+        const ok = await this.rewriteBlock(sourcePath, lineStart, lineEnd, source, (lines, s, e) => [
+            ...lines.slice(0, s),
+            embed,
+            ...lines.slice(e + 1),
+        ]);
+        if (!ok) {
+            await this.app.vault.delete(file);
+            new Notice("SVG Editor: could not rewrite the note — the block changed under us.");
+            return null;
+        }
+        new Notice(`Saved to ${file.path}`);
+        return file;
+    }
+
+    /**
+     * Replace an ![[file.svg]] embed in the note with an inline ```svg block
+     * containing the file's source. The .svg file itself is kept.
+     */
+    async convertEmbedToBlock(src: string, sourcePath: string): Promise<boolean> {
+        const linkpath = src.split("#")[0].trim();
+        const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath);
+        if (!file) {
+            new Notice(`SVG Editor: cannot resolve "${linkpath}".`);
+            return false;
+        }
+        const note = this.app.vault.getAbstractFileByPath(sourcePath);
+        if (!(note instanceof TFile)) {
+            new Notice("SVG Editor: cannot locate the containing note.");
+            return false;
+        }
+        const source = (await this.app.vault.read(file)).trim();
+
+        let converted = false;
+        let total = 0;
+        await this.app.vault.process(note, (data) => {
+            // Find wiki-style embeds whose target resolves to this file.
+            const re = /!\[\[([^\]]+)\]\]/g;
+            const hits: { start: number; end: number }[] = [];
+            for (let m = re.exec(data); m; m = re.exec(data)) {
+                const target = m[1].split(/[|#]/)[0].trim();
+                const resolved = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+                if (resolved?.path === file.path) hits.push({ start: m.index, end: m.index + m[0].length });
+            }
+            total = hits.length;
+            if (total === 0) return data;
+            converted = true;
+
+            const { start, end } = hits[0];
+            const block = `\`\`\`svg\n${source}\n\`\`\``;
+            // An embed alone on its line swaps cleanly; one inside other text
+            // needs the block set apart on its own lines.
+            const lineStart = data.lastIndexOf("\n", start - 1) + 1;
+            const lineEnd = data.indexOf("\n", end);
+            const line = data.slice(lineStart, lineEnd === -1 ? data.length : lineEnd);
+            const alone = line.trim() === data.slice(start, end);
+            return data.slice(0, start) + (alone ? block : `\n${block}\n`) + data.slice(end);
+        });
+
+        if (!converted) {
+            new Notice("SVG Editor: could not find this embed's link in the note.");
+        } else {
+            new Notice(
+                total > 1
+                    ? `Converted the first of ${total} embeds of this file (the .svg file was kept).`
+                    : `Converted to an inline svg block (${file.path} was kept).`
+            );
+        }
+        return converted;
+    }
+
+    /** Pick an attachment path for a new drawing next to the note's attachments. */
+    private async createSvgAttachment(source: string, sourcePath: string): Promise<TFile> {
+        const noteName = sourcePath.split("/").pop()?.replace(/\.md$/i, "") || "Drawing";
+        const fm = this.app.fileManager as unknown as {
+            getAvailablePathForAttachment?: (name: string, sourcePath: string) => Promise<string>;
+        };
+        let path: string;
+        if (typeof fm.getAvailablePathForAttachment === "function") {
+            path = await fm.getAvailablePathForAttachment(`${noteName} drawing.svg`, sourcePath);
+        } else {
+            let i = 0;
+            do {
+                path = `${noteName} drawing${i ? ` ${i}` : ""}.svg`;
+                i++;
+            } while (this.app.vault.getAbstractFileByPath(path));
+        }
+        return this.app.vault.create(path, source);
+    }
+
+    /** An embed link to the file, respecting the user's link format. */
+    private embedLinkFor(file: TFile, sourcePath: string): string {
+        const link = this.app.fileManager.generateMarkdownLink(file, sourcePath);
+        return link.startsWith("!") ? link : `!${link}`;
     }
 
     /** Re-point every rendered <img> of this file at its new content. */
@@ -320,6 +473,16 @@ class SvgEmbedDecorator extends MarkdownRenderChild {
             e.preventDefault();
             e.stopPropagation();
             void this.plugin.editSvgFileBySrc(this.src, this.sourcePath);
+        });
+        const convertBtn = el.createEl("button", {
+            cls: "svge-edit-btn svge-convert-btn",
+            attr: { "aria-label": "Convert to inline svg block" },
+        });
+        setIcon(convertBtn, "code");
+        convertBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void this.plugin.convertEmbedToBlock(this.src, this.sourcePath);
         });
     }
 }

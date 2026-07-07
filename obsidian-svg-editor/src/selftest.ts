@@ -384,6 +384,79 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 host4.remove();
             }
         }
+
+        // ---- 17. Inline block ⇄ embedded file conversion ----
+        const CONVERT_PATH = "SVGE-SelfTest-Convert.md";
+        const blockSource =
+            '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">\n  <circle cx="20" cy="20" r="15" stroke="#aa0000" fill="none"/>\n</svg>';
+        const convertBody = `# Convert test\n\n\`\`\`svg\n${blockSource}\n\`\`\`\n`;
+        const existingConvert = plugin.app.vault.getAbstractFileByPath(CONVERT_PATH);
+        if (existingConvert instanceof TFile) {
+            await plugin.app.vault.modify(existingConvert, convertBody);
+        } else {
+            await plugin.app.vault.create(CONVERT_PATH, convertBody);
+        }
+
+        // Block → embedded file (lines 2..6 are the fence block).
+        const attachment = await plugin.convertBlockToEmbed(CONVERT_PATH, 2, 6, blockSource);
+        const noteAfterOut = await plugin.app.vault.adapter.read(CONVERT_PATH);
+        check(
+            "block converts to embedded .svg file",
+            !!attachment && noteAfterOut.includes("![[") && !noteAfterOut.includes("```svg"),
+            attachment ? attachment.path : "no file created"
+        );
+        if (attachment) {
+            const attContent = await plugin.app.vault.adapter.read(attachment.path);
+            check("extracted file holds the block source", attContent.trim() === blockSource.trim(), attContent.split("\n")[0] ?? "");
+
+            // Embedded file → inline block (give the metadata cache a beat to
+            // index the just-created attachment).
+            await sleep(150);
+            const back = await plugin.convertEmbedToBlock(attachment.name, CONVERT_PATH);
+            const noteAfterIn = await plugin.app.vault.adapter.read(CONVERT_PATH);
+            check(
+                "embed converts back to inline block",
+                back && noteAfterIn.includes("```svg") && noteAfterIn.includes("<circle") && !noteAfterIn.includes("![["),
+                noteAfterIn.split("\n")[2] ?? ""
+            );
+            check(
+                "converted-back note keeps the .svg file",
+                !!plugin.app.vault.getAbstractFileByPath(attachment.path),
+                attachment.path
+            );
+            // Keep the vault tidy across repeated runs.
+            await plugin.app.vault.delete(attachment);
+        }
+
+        // Convert buttons appear on rendered blocks and embeds.
+        const host5 = document.body.createDiv();
+        host5.style.position = "fixed";
+        host5.style.left = "-9999px";
+        const comp5 = new Component();
+        comp5.load();
+        try {
+            await MarkdownRenderer.render(
+                plugin.app,
+                `\`\`\`svg\n${blockSource}\n\`\`\`\n\n![[${FILE_PATH}]]\n`,
+                host5,
+                CONVERT_PATH,
+                comp5
+            );
+            await sleep(150);
+            check(
+                "convert button on rendered block",
+                !!host5.querySelector(".svge-block .svge-convert-btn"),
+                ""
+            );
+            check(
+                "convert button on rendered embed",
+                !!host5.querySelector(".internal-embed .svge-convert-btn"),
+                ""
+            );
+        } finally {
+            comp5.unload();
+            host5.remove();
+        }
     } catch (e) {
         check("self-test crashed", false, e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e));
     } finally {

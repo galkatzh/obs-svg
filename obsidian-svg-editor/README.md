@@ -7,6 +7,7 @@ An Obsidian plugin that turns ```` ```svg ```` code blocks into inline drawings 
 - Renders ```` ```svg ```` fenced code blocks as inline SVG in reading and live-preview modes (sanitized: scripts, event handlers and `javascript:` URLs are stripped).
 - Hover a rendered block and click the pencil button (or double-click) to open the editor; **Save** writes the SVG back into the note.
 - **Embedded `.svg` files** — `![[drawing.svg]]` embeds get the same pencil button in reading mode; double-clicking an embedded svg image works in any mode, and `.svg` files get an **Edit in SVG Editor** entry in the file explorer's context menu. Save writes the `.svg` file back and refreshes every visible embed of it.
+- **Convert between the two** — a second hover button on each: on an inline block it saves the drawing as a `.svg` file in the vault (named after the note, placed per your attachment settings) and replaces the block with an embed link; on an embed it inlines the file's source as a ```` ```svg ```` block (the `.svg` file is kept).
 - **Visual mode**
   - Tools: select & move (`V`), line (`L`), circle (`C`), rectangle (`R`), freehand scribble (`P`), delete (`X` — click a shape, or press and sweep over several; they fade as they're marked and are removed on release)
   - Click / shift-click / marquee (rubber-band) selection; drag to move; `Delete` removes the selection; `Ctrl/Cmd+A` selects all

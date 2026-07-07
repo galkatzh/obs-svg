@@ -1223,6 +1223,78 @@ async function runSelfTest(plugin) {
         host4.remove();
       }
     }
+    const CONVERT_PATH = "SVGE-SelfTest-Convert.md";
+    const blockSource = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">\n  <circle cx="20" cy="20" r="15" stroke="#aa0000" fill="none"/>\n</svg>';
+    const convertBody = `# Convert test
+
+\`\`\`svg
+${blockSource}
+\`\`\`
+`;
+    const existingConvert = plugin.app.vault.getAbstractFileByPath(CONVERT_PATH);
+    if (existingConvert instanceof import_obsidian2.TFile) {
+      await plugin.app.vault.modify(existingConvert, convertBody);
+    } else {
+      await plugin.app.vault.create(CONVERT_PATH, convertBody);
+    }
+    const attachment = await plugin.convertBlockToEmbed(CONVERT_PATH, 2, 6, blockSource);
+    const noteAfterOut = await plugin.app.vault.adapter.read(CONVERT_PATH);
+    check(
+      "block converts to embedded .svg file",
+      !!attachment && noteAfterOut.includes("![[") && !noteAfterOut.includes("```svg"),
+      attachment ? attachment.path : "no file created"
+    );
+    if (attachment) {
+      const attContent = await plugin.app.vault.adapter.read(attachment.path);
+      check("extracted file holds the block source", attContent.trim() === blockSource.trim(), attContent.split("\n")[0] ?? "");
+      await sleep(150);
+      const back = await plugin.convertEmbedToBlock(attachment.name, CONVERT_PATH);
+      const noteAfterIn = await plugin.app.vault.adapter.read(CONVERT_PATH);
+      check(
+        "embed converts back to inline block",
+        back && noteAfterIn.includes("```svg") && noteAfterIn.includes("<circle") && !noteAfterIn.includes("![["),
+        noteAfterIn.split("\n")[2] ?? ""
+      );
+      check(
+        "converted-back note keeps the .svg file",
+        !!plugin.app.vault.getAbstractFileByPath(attachment.path),
+        attachment.path
+      );
+      await plugin.app.vault.delete(attachment);
+    }
+    const host5 = document.body.createDiv();
+    host5.style.position = "fixed";
+    host5.style.left = "-9999px";
+    const comp5 = new import_obsidian2.Component();
+    comp5.load();
+    try {
+      await import_obsidian2.MarkdownRenderer.render(
+        plugin.app,
+        `\`\`\`svg
+${blockSource}
+\`\`\`
+
+![[${FILE_PATH}]]
+`,
+        host5,
+        CONVERT_PATH,
+        comp5
+      );
+      await sleep(150);
+      check(
+        "convert button on rendered block",
+        !!host5.querySelector(".svge-block .svge-convert-btn"),
+        ""
+      );
+      check(
+        "convert button on rendered embed",
+        !!host5.querySelector(".internal-embed .svge-convert-btn"),
+        ""
+      );
+    } finally {
+      comp5.unload();
+      host5.remove();
+    }
   } catch (e) {
     check("self-test crashed", false, e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e));
@@ -1321,10 +1393,12 @@ ${newSource}
   // ------------------------------------------------------------------
   renderSvgBlock(source, el, ctx) {
     el.addClass("svge-block");
+    let parsedOk = false;
     if (source.trim()) {
       try {
         const svg = parseSvgSource(source);
         el.appendChild(document.importNode(svg, true));
+        parsedOk = true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         el.createDiv({ cls: "svge-block-error", text: `Invalid SVG: ${msg}` });
@@ -1356,6 +1430,21 @@ ${newSource}
     (0, import_obsidian3.setIcon)(btn, "pencil");
     btn.addEventListener("click", openEditor);
     el.addEventListener("dblclick", openEditor);
+    if (parsedOk) {
+      const convertBtn = el.createEl("button", {
+        cls: "svge-edit-btn svge-convert-btn",
+        attr: { "aria-label": "Convert to embedded .svg file" }
+      });
+      (0, import_obsidian3.setIcon)(convertBtn, "file-output");
+      convertBtn.addEventListener("click", () => {
+        const info = ctx.getSectionInfo(el);
+        if (!info) {
+          new import_obsidian3.Notice("SVG Editor: cannot locate this block in the note.");
+          return;
+        }
+        void this.convertBlockToEmbed(ctx.sourcePath, info.lineStart, info.lineEnd, source);
+      });
+    }
   }
   /**
    * Replace the body of the ```svg block spanning [lineStart, lineEnd]
@@ -1363,6 +1452,17 @@ ${newSource}
    * whose body matches oldSource if the recorded lines have drifted.
    */
   async replaceBlockInFile(path, lineStart, lineEnd, oldSource, newSource) {
+    return this.rewriteBlock(path, lineStart, lineEnd, oldSource, (lines, s, e) => [
+      ...lines.slice(0, s + 1),
+      ...newSource.split("\n"),
+      ...lines.slice(e)
+    ]);
+  }
+  /**
+   * Locate the ```svg block spanning [lineStart, lineEnd] (with the same
+   * stale-line fallback as replaceBlockInFile) and rebuild the note's lines.
+   */
+  async rewriteBlock(path, lineStart, lineEnd, oldSource, rebuild) {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof import_obsidian3.TFile)) return false;
     let ok = false;
@@ -1391,7 +1491,7 @@ ${newSource}
         [s, e] = candidates[0];
       }
       ok = true;
-      return [...lines.slice(0, s + 1), ...newSource.split("\n"), ...lines.slice(e)].join("\n");
+      return rebuild(lines, s, e).join("\n");
     });
     return ok;
   }
@@ -1417,6 +1517,107 @@ ${newSource}
     });
     modal.open();
     return modal;
+  }
+  // ------------------------------------------------------------------
+  // Inline block ⇄ embedded file conversion
+  // ------------------------------------------------------------------
+  /**
+   * Save an inline ```svg block as a vault .svg file and replace the whole
+   * block (fences included) with an embed link. Returns the created file.
+   */
+  async convertBlockToEmbed(sourcePath, lineStart, lineEnd, source) {
+    let file;
+    try {
+      file = await this.createSvgAttachment(source, sourcePath);
+    } catch (e) {
+      new import_obsidian3.Notice(`SVG Editor: could not create the .svg file: ${e instanceof Error ? e.message : e}`);
+      return null;
+    }
+    const embed = this.embedLinkFor(file, sourcePath);
+    const ok = await this.rewriteBlock(sourcePath, lineStart, lineEnd, source, (lines, s, e) => [
+      ...lines.slice(0, s),
+      embed,
+      ...lines.slice(e + 1)
+    ]);
+    if (!ok) {
+      await this.app.vault.delete(file);
+      new import_obsidian3.Notice("SVG Editor: could not rewrite the note \u2014 the block changed under us.");
+      return null;
+    }
+    new import_obsidian3.Notice(`Saved to ${file.path}`);
+    return file;
+  }
+  /**
+   * Replace an ![[file.svg]] embed in the note with an inline ```svg block
+   * containing the file's source. The .svg file itself is kept.
+   */
+  async convertEmbedToBlock(src, sourcePath) {
+    const linkpath = src.split("#")[0].trim();
+    const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath);
+    if (!file) {
+      new import_obsidian3.Notice(`SVG Editor: cannot resolve "${linkpath}".`);
+      return false;
+    }
+    const note = this.app.vault.getAbstractFileByPath(sourcePath);
+    if (!(note instanceof import_obsidian3.TFile)) {
+      new import_obsidian3.Notice("SVG Editor: cannot locate the containing note.");
+      return false;
+    }
+    const source = (await this.app.vault.read(file)).trim();
+    let converted = false;
+    let total = 0;
+    await this.app.vault.process(note, (data) => {
+      const re = /!\[\[([^\]]+)\]\]/g;
+      const hits = [];
+      for (let m = re.exec(data); m; m = re.exec(data)) {
+        const target = m[1].split(/[|#]/)[0].trim();
+        const resolved = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+        if (resolved?.path === file.path) hits.push({ start: m.index, end: m.index + m[0].length });
+      }
+      total = hits.length;
+      if (total === 0) return data;
+      converted = true;
+      const { start, end } = hits[0];
+      const block = `\`\`\`svg
+${source}
+\`\`\``;
+      const lineStart = data.lastIndexOf("\n", start - 1) + 1;
+      const lineEnd = data.indexOf("\n", end);
+      const line = data.slice(lineStart, lineEnd === -1 ? data.length : lineEnd);
+      const alone = line.trim() === data.slice(start, end);
+      return data.slice(0, start) + (alone ? block : `
+${block}
+`) + data.slice(end);
+    });
+    if (!converted) {
+      new import_obsidian3.Notice("SVG Editor: could not find this embed's link in the note.");
+    } else {
+      new import_obsidian3.Notice(
+        total > 1 ? `Converted the first of ${total} embeds of this file (the .svg file was kept).` : `Converted to an inline svg block (${file.path} was kept).`
+      );
+    }
+    return converted;
+  }
+  /** Pick an attachment path for a new drawing next to the note's attachments. */
+  async createSvgAttachment(source, sourcePath) {
+    const noteName = sourcePath.split("/").pop()?.replace(/\.md$/i, "") || "Drawing";
+    const fm = this.app.fileManager;
+    let path;
+    if (typeof fm.getAvailablePathForAttachment === "function") {
+      path = await fm.getAvailablePathForAttachment(`${noteName} drawing.svg`, sourcePath);
+    } else {
+      let i = 0;
+      do {
+        path = `${noteName} drawing${i ? ` ${i}` : ""}.svg`;
+        i++;
+      } while (this.app.vault.getAbstractFileByPath(path));
+    }
+    return this.app.vault.create(path, source);
+  }
+  /** An embed link to the file, respecting the user's link format. */
+  embedLinkFor(file, sourcePath) {
+    const link = this.app.fileManager.generateMarkdownLink(file, sourcePath);
+    return link.startsWith("!") ? link : `!${link}`;
   }
   /** Re-point every rendered <img> of this file at its new content. */
   refreshEmbedsOf(file) {
@@ -1500,6 +1701,16 @@ var SvgEmbedDecorator = class extends import_obsidian3.MarkdownRenderChild {
       e.preventDefault();
       e.stopPropagation();
       void this.plugin.editSvgFileBySrc(this.src, this.sourcePath);
+    });
+    const convertBtn = el.createEl("button", {
+      cls: "svge-edit-btn svge-convert-btn",
+      attr: { "aria-label": "Convert to inline svg block" }
+    });
+    (0, import_obsidian3.setIcon)(convertBtn, "code");
+    convertBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.plugin.convertEmbedToBlock(this.src, this.sourcePath);
     });
   }
 };
