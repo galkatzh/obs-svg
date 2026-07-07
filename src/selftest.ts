@@ -18,7 +18,10 @@ interface Result {
 const REPORT_PATH = "SVGE-SelfTest-Report.md";
 const TARGET_PATH = "SVGE-SelfTest-Target.md";
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+
+/** Offscreen container for render checks, styled via styles.css. */
+const hiddenHost = (): HTMLElement => activeDocument.body.createDiv({ cls: "svge-selftest-host" });
 
 function firePointer(target: EventTarget, type: string, x: number, y: number, opts: PointerEventInit = {}): void {
     target.dispatchEvent(
@@ -196,9 +199,7 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         check("stale section info falls back to search", wrote2 && body2.includes("<!-- fallback -->"), `wrote=${wrote2}`);
 
         // ---- 13. Markdown renderer produces an inline svg + edit button ----
-        const host = document.body.createDiv();
-        host.style.position = "fixed";
-        host.style.left = "-9999px";
+        const host = hiddenHost();
         const comp = new Component();
         try {
             await MarkdownRenderer.render(
@@ -218,9 +219,7 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         }
 
         // ---- 14. Malicious svg is sanitized in preview ----
-        const host2 = document.body.createDiv();
-        host2.style.position = "fixed";
-        host2.style.left = "-9999px";
+        const host2 = hiddenHost();
         const comp2 = new Component();
         try {
             await MarkdownRenderer.render(
@@ -247,14 +246,14 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         // toggles it. On a real/emulated mobile app the checks run against the
         // real UI; on desktop we simulate the one signal the plugin's mobile
         // behavior keys off (the is-mobile body class).
-        const wasMobile = document.body.classList.contains("is-mobile");
+        const wasMobile = activeDocument.body.classList.contains("is-mobile");
         {
             let mModal: SvgEditorModal | null = null;
             try {
-                if (!wasMobile) document.body.classList.add("is-mobile");
+                if (!wasMobile) activeDocument.body.classList.add("is-mobile");
                 check(
                     "mobile signal active",
-                    document.body.classList.contains("is-mobile"),
+                    activeDocument.body.classList.contains("is-mobile"),
                     wasMobile ? "real mobile UI" : "simulated via body class"
                 );
 
@@ -290,9 +289,7 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 mModal = null;
 
                 // Edit button on rendered blocks must be visible without hover.
-                const host3 = document.body.createDiv();
-                host3.style.position = "fixed";
-                host3.style.left = "-9999px";
+                const host3 = hiddenHost();
                 const comp3 = new Component();
                 try {
                     await MarkdownRenderer.render(
@@ -312,7 +309,7 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 }
             } finally {
                 mModal?.close();
-                if (!wasMobile) document.body.classList.remove("is-mobile");
+                if (!wasMobile) activeDocument.body.classList.remove("is-mobile");
             }
         }
 
@@ -356,9 +353,7 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
 
             // Rendered ![[file.svg]] embeds get an edit button that survives
             // Obsidian re-rendering the embed's content.
-            const host4 = document.body.createDiv();
-            host4.style.position = "fixed";
-            host4.style.left = "-9999px";
+            const host4 = hiddenHost();
             const comp4 = new Component();
             comp4.load();
             try {
@@ -425,13 +420,11 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 attachment.path
             );
             // Keep the vault tidy across repeated runs.
-            await plugin.app.vault.delete(attachment);
+            await plugin.app.fileManager.trashFile(attachment);
         }
 
         // Convert buttons appear on rendered blocks and embeds.
-        const host5 = document.body.createDiv();
-        host5.style.position = "fixed";
-        host5.style.left = "-9999px";
+        const host5 = hiddenHost();
         const comp5 = new Component();
         comp5.load();
         try {
@@ -461,9 +454,7 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         // ---- 18. Live-preview-style embeds (no post-processor) get decorated ----
         // The document observer must pick up any .internal-embed that appears,
         // and replace stale buttons left by an earlier plugin instance.
-        const lpHost = document.body.createDiv();
-        lpHost.style.position = "fixed";
-        lpHost.style.left = "-9999px";
+        const lpHost = hiddenHost();
         try {
             const lpEmbed = lpHost.createEl("div", {
                 cls: "internal-embed",

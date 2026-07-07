@@ -112,9 +112,9 @@ var SvgEditorCore = class {
     this.boundPointerUp = (e) => this.handlePointerUp(e);
     /** Pointer that started the current gesture; other touches are ignored. */
     this.activePointerId = -1;
-    this.svgEl = document.createElementNS(SVG_NS, "svg");
+    this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
     this.svgEl.classList.add("svge-canvas");
-    this.overlayEl = document.createElementNS(SVG_NS, "g");
+    this.overlayEl = containerEl.doc.createElementNS(SVG_NS, "g");
     this.overlayEl.setAttribute("data-svge-overlay", "");
     this.svgEl.appendChild(this.overlayEl);
     containerEl.appendChild(this.svgEl);
@@ -122,9 +122,9 @@ var SvgEditorCore = class {
     this.applyViewBox();
   }
   destroy() {
-    window.removeEventListener("pointermove", this.boundPointerMove);
-    window.removeEventListener("pointerup", this.boundPointerUp);
-    window.removeEventListener("pointercancel", this.boundPointerUp);
+    this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
+    this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
+    this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
     this.svgEl.remove();
   }
   // ------------------------------------------------------------------
@@ -167,7 +167,7 @@ var SvgEditorCore = class {
     }
     this.contentChildren().forEach((el) => el.remove());
     for (const child of Array.from(parsed.childNodes)) {
-      this.svgEl.insertBefore(document.importNode(child, true), this.overlayEl);
+      this.svgEl.insertBefore(this.svgEl.doc.importNode(child, true), this.overlayEl);
     }
     this.clearSelection();
     this.applyViewBox();
@@ -358,7 +358,7 @@ var SvgEditorCore = class {
     for (const el of this.selection) {
       const bb = this.svgBBox(el);
       const pad = 2;
-      const rect = document.createElementNS(SVG_NS, "rect");
+      const rect = this.svgEl.doc.createElementNS(SVG_NS, "rect");
       rect.setAttribute("class", "svge-selbox");
       rect.setAttribute("x", String(bb.x - pad));
       rect.setAttribute("y", String(bb.y - pad));
@@ -419,7 +419,7 @@ var SvgEditorCore = class {
         };
       } else {
         if (!e.shiftKey) this.clearSelection();
-        const marquee = document.createElementNS(SVG_NS, "rect");
+        const marquee = this.svgEl.doc.createElementNS(SVG_NS, "rect");
         marquee.setAttribute("class", "svge-marquee");
         marquee.setAttribute("x", String(p.x));
         marquee.setAttribute("y", String(p.y));
@@ -430,7 +430,7 @@ var SvgEditorCore = class {
       let el;
       switch (this.tool) {
         case "line": {
-          el = document.createElementNS(SVG_NS, "line");
+          el = this.svgEl.doc.createElementNS(SVG_NS, "line");
           el.setAttribute("x1", String(round(p.x)));
           el.setAttribute("y1", String(round(p.y)));
           el.setAttribute("x2", String(round(p.x)));
@@ -438,14 +438,14 @@ var SvgEditorCore = class {
           break;
         }
         case "circle": {
-          el = document.createElementNS(SVG_NS, "circle");
+          el = this.svgEl.doc.createElementNS(SVG_NS, "circle");
           el.setAttribute("cx", String(round(p.x)));
           el.setAttribute("cy", String(round(p.y)));
           el.setAttribute("r", "0");
           break;
         }
         case "rect": {
-          el = document.createElementNS(SVG_NS, "rect");
+          el = this.svgEl.doc.createElementNS(SVG_NS, "rect");
           el.setAttribute("x", String(round(p.x)));
           el.setAttribute("y", String(round(p.y)));
           el.setAttribute("width", "0");
@@ -453,7 +453,7 @@ var SvgEditorCore = class {
           break;
         }
         default: {
-          el = document.createElementNS(SVG_NS, "path");
+          el = this.svgEl.doc.createElementNS(SVG_NS, "path");
           el.setAttribute("d", `M${round(p.x)},${round(p.y)}`);
           break;
         }
@@ -464,9 +464,9 @@ var SvgEditorCore = class {
     }
     if (this.draw) {
       this.activePointerId = e.pointerId;
-      window.addEventListener("pointermove", this.boundPointerMove);
-      window.addEventListener("pointerup", this.boundPointerUp);
-      window.addEventListener("pointercancel", this.boundPointerUp);
+      this.svgEl.win.addEventListener("pointermove", this.boundPointerMove);
+      this.svgEl.win.addEventListener("pointerup", this.boundPointerUp);
+      this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
       e.preventDefault();
     }
   }
@@ -486,7 +486,7 @@ var SvgEditorCore = class {
     const d = this.draw;
     switch (d.kind) {
       case "delete": {
-        this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+        this.markForDeletion(d, this.svgEl.doc.elementFromPoint(e.clientX, e.clientY));
         break;
       }
       case "select": {
@@ -534,14 +534,14 @@ var SvgEditorCore = class {
   handlePointerUp(e) {
     if (e.pointerId !== this.activePointerId) return;
     this.activePointerId = -1;
-    window.removeEventListener("pointermove", this.boundPointerMove);
-    window.removeEventListener("pointerup", this.boundPointerUp);
-    window.removeEventListener("pointercancel", this.boundPointerUp);
+    this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
+    this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
+    this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
     const d = this.draw;
     this.draw = null;
     if (!d) return;
     if (d.kind === "delete") {
-      this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+      this.markForDeletion(d, this.svgEl.doc.elementFromPoint(e.clientX, e.clientY));
       const marks = d.deleteMarks;
       if (marks.size > 0) {
         for (const el2 of marks.keys()) el2.remove();
@@ -633,11 +633,11 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     this.tabButtons = {};
     this.toolButtons = {};
     /** Compact layout: phones/tablets, or a narrow desktop window. */
-    this.compactQuery = window.matchMedia("(max-width: 640px)");
+    this.compactQuery = activeWindow.matchMedia("(max-width: 640px)");
     this.updateCompact = () => {
       this.modalEl.toggleClass(
         "svge-compact",
-        import_obsidian.Platform.isMobile || document.body.classList.contains("is-mobile") || this.compactQuery.matches
+        import_obsidian.Platform.isMobile || activeDocument.body.classList.contains("is-mobile") || this.compactQuery.matches
       );
     };
   }
@@ -914,7 +914,8 @@ var SvgEditorModal = class extends import_obsidian.Modal {
 var import_obsidian2 = require("obsidian");
 var REPORT_PATH = "SVGE-SelfTest-Report.md";
 var TARGET_PATH = "SVGE-SelfTest-Target.md";
-var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var sleep = (ms) => new Promise((r) => window.setTimeout(r, ms));
+var hiddenHost = () => activeDocument.body.createDiv({ cls: "svge-selftest-host" });
 function firePointer(target, type, x, y, opts = {}) {
   target.dispatchEvent(
     new PointerEvent(type, {
@@ -1056,9 +1057,7 @@ async function runSelfTest(plugin) {
     const wrote2 = await plugin.replaceBlockInFile(TARGET_PATH, 0, 1, savedSource, savedSource + "\n<!-- fallback -->");
     const body2 = await vault2.adapter.read(TARGET_PATH);
     check("stale section info falls back to search", wrote2 && body2.includes("<!-- fallback -->"), `wrote=${wrote2}`);
-    const host = document.body.createDiv();
-    host.style.position = "fixed";
-    host.style.left = "-9999px";
+    const host = hiddenHost();
     const comp = new import_obsidian2.Component();
     try {
       await import_obsidian2.MarkdownRenderer.render(
@@ -1076,9 +1075,7 @@ async function runSelfTest(plugin) {
       comp.unload();
       host.remove();
     }
-    const host2 = document.body.createDiv();
-    host2.style.position = "fixed";
-    host2.style.left = "-9999px";
+    const host2 = hiddenHost();
     const comp2 = new import_obsidian2.Component();
     try {
       await import_obsidian2.MarkdownRenderer.render(
@@ -1099,14 +1096,14 @@ async function runSelfTest(plugin) {
       comp2.unload();
       host2.remove();
     }
-    const wasMobile = document.body.classList.contains("is-mobile");
+    const wasMobile = activeDocument.body.classList.contains("is-mobile");
     {
       let mModal = null;
       try {
-        if (!wasMobile) document.body.classList.add("is-mobile");
+        if (!wasMobile) activeDocument.body.classList.add("is-mobile");
         check(
           "mobile signal active",
-          document.body.classList.contains("is-mobile"),
+          activeDocument.body.classList.contains("is-mobile"),
           wasMobile ? "real mobile UI" : "simulated via body class"
         );
         mModal = new SvgEditorModal(plugin.app, "", () => {
@@ -1136,9 +1133,7 @@ async function runSelfTest(plugin) {
         check("delete-selection button removes shapes", mCore.contentChildren().length === 0, `count=${mCore.contentChildren().length}`);
         mModal.close();
         mModal = null;
-        const host3 = document.body.createDiv();
-        host3.style.position = "fixed";
-        host3.style.left = "-9999px";
+        const host3 = hiddenHost();
         const comp3 = new import_obsidian2.Component();
         try {
           await import_obsidian2.MarkdownRenderer.render(
@@ -1158,7 +1153,7 @@ async function runSelfTest(plugin) {
         }
       } finally {
         mModal?.close();
-        if (!wasMobile) document.body.classList.remove("is-mobile");
+        if (!wasMobile) activeDocument.body.classList.remove("is-mobile");
       }
     }
     const FILE_PATH = "SVGE-SelfTest-File.svg";
@@ -1195,9 +1190,7 @@ async function runSelfTest(plugin) {
       } finally {
         fModal?.close();
       }
-      const host4 = document.body.createDiv();
-      host4.style.position = "fixed";
-      host4.style.left = "-9999px";
+      const host4 = hiddenHost();
       const comp4 = new import_obsidian2.Component();
       comp4.load();
       try {
@@ -1260,11 +1253,9 @@ ${blockSource}
         !!plugin.app.vault.getAbstractFileByPath(attachment.path),
         attachment.path
       );
-      await plugin.app.vault.delete(attachment);
+      await plugin.app.fileManager.trashFile(attachment);
     }
-    const host5 = document.body.createDiv();
-    host5.style.position = "fixed";
-    host5.style.left = "-9999px";
+    const host5 = hiddenHost();
     const comp5 = new import_obsidian2.Component();
     comp5.load();
     try {
@@ -1295,9 +1286,7 @@ ${blockSource}
       comp5.unload();
       host5.remove();
     }
-    const lpHost = document.body.createDiv();
-    lpHost.style.position = "fixed";
-    lpHost.style.left = "-9999px";
+    const lpHost = hiddenHost();
     try {
       const lpEmbed = lpHost.createEl("div", {
         cls: "internal-embed",
@@ -1357,11 +1346,11 @@ var SvgEditorPlugin = class extends import_obsidian3.Plugin {
     });
     const embedObserver = new MutationObserver((mutations) => {
       for (const mut of mutations) {
-        if (mut.target instanceof HTMLElement && mut.target.matches(".internal-embed")) {
+        if (mut.target.instanceOf(HTMLElement) && mut.target.matches(".internal-embed")) {
           this.maybeDecorateEmbed(mut.target);
         }
         for (const node of Array.from(mut.addedNodes)) {
-          if (!(node instanceof HTMLElement)) continue;
+          if (!node.instanceOf(HTMLElement)) continue;
           if (node.matches(".internal-embed")) this.maybeDecorateEmbed(node);
           for (const embed of Array.from(node.querySelectorAll(".internal-embed"))) {
             this.maybeDecorateEmbed(embed);
@@ -1369,20 +1358,20 @@ var SvgEditorPlugin = class extends import_obsidian3.Plugin {
         }
       }
     });
-    embedObserver.observe(document.body, { childList: true, subtree: true });
+    embedObserver.observe(activeDocument.body, { childList: true, subtree: true });
     this.register(() => embedObserver.disconnect());
     this.app.workspace.onLayoutReady(() => {
-      for (const embed of Array.from(document.querySelectorAll(".internal-embed"))) {
+      for (const embed of Array.from(activeDocument.querySelectorAll(".internal-embed"))) {
         this.maybeDecorateEmbed(embed);
       }
     });
     this.register(() => {
-      for (const btn of Array.from(document.querySelectorAll(".svge-file-embed > .svge-edit-btn"))) btn.remove();
-      for (const el of Array.from(document.querySelectorAll(".svge-file-embed"))) el.removeClass("svge-file-embed");
+      for (const btn of Array.from(activeDocument.querySelectorAll(".svge-file-embed > .svge-edit-btn"))) btn.remove();
+      for (const el of Array.from(activeDocument.querySelectorAll(".svge-file-embed"))) el.removeClass("svge-file-embed");
     });
-    this.registerDomEvent(document, "dblclick", (evt) => {
+    this.registerDomEvent(activeDocument, "dblclick", (evt) => {
       const embed = evt.target?.closest?.(".internal-embed");
-      if (!(embed instanceof HTMLElement)) return;
+      if (!embed?.instanceOf(HTMLElement)) return;
       const src = embed.getAttribute("src");
       if (!src || !isSvgLink(src)) return;
       evt.preventDefault();
@@ -1427,7 +1416,7 @@ ${newSource}
       checkCallback: (checking) => {
         const anyApp = this.app;
         if (typeof anyApp.emulateMobile !== "function") return false;
-        if (!checking) anyApp.emulateMobile(!document.body.classList.contains("is-mobile"));
+        if (!checking) anyApp.emulateMobile(!activeDocument.body.classList.contains("is-mobile"));
         return true;
       }
     });
@@ -1441,7 +1430,7 @@ ${newSource}
     if (source.trim()) {
       try {
         const svg = parseSvgSource(source);
-        el.appendChild(document.importNode(svg, true));
+        el.appendChild(el.doc.importNode(svg, true));
         parsedOk = true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1619,7 +1608,7 @@ ${newSource}
       ...lines.slice(e + 1)
     ]);
     if (!ok) {
-      await this.app.vault.delete(file);
+      await this.app.fileManager.trashFile(file);
       new import_obsidian3.Notice("SVG Editor: could not rewrite the note \u2014 the block changed under us.");
       return null;
     }
@@ -1702,7 +1691,7 @@ ${block}
   refreshEmbedsOf(file) {
     const fresh = this.app.vault.getResourcePath(file);
     const base = fresh.split("?")[0];
-    for (const img of Array.from(document.querySelectorAll("img"))) {
+    for (const img of Array.from(activeDocument.querySelectorAll("img"))) {
       if (img.src.split("?")[0] === base) img.src = fresh;
     }
   }

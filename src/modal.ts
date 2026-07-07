@@ -43,11 +43,11 @@ export class SvgEditorModal extends Modal {
     private deleteSelBtn!: HTMLButtonElement;
 
     /** Compact layout: phones/tablets, or a narrow desktop window. */
-    private compactQuery = window.matchMedia("(max-width: 640px)");
+    private compactQuery = activeWindow.matchMedia("(max-width: 640px)");
     private updateCompact = (): void => {
         this.modalEl.toggleClass(
             "svge-compact",
-            Platform.isMobile || document.body.classList.contains("is-mobile") || this.compactQuery.matches
+            Platform.isMobile || activeDocument.body.classList.contains("is-mobile") || this.compactQuery.matches
         );
     };
 

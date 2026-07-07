@@ -39,11 +39,11 @@ export default class SvgEditorPlugin extends Plugin {
         // appears or has its content swapped by Obsidian's embed loader.
         const embedObserver = new MutationObserver((mutations) => {
             for (const mut of mutations) {
-                if (mut.target instanceof HTMLElement && mut.target.matches(".internal-embed")) {
+                if (mut.target.instanceOf(HTMLElement) && mut.target.matches(".internal-embed")) {
                     this.maybeDecorateEmbed(mut.target);
                 }
                 for (const node of Array.from(mut.addedNodes)) {
-                    if (!(node instanceof HTMLElement)) continue;
+                    if (!node.instanceOf(HTMLElement)) continue;
                     if (node.matches(".internal-embed")) this.maybeDecorateEmbed(node);
                     for (const embed of Array.from(node.querySelectorAll<HTMLElement>(".internal-embed"))) {
                         this.maybeDecorateEmbed(embed);
@@ -51,23 +51,23 @@ export default class SvgEditorPlugin extends Plugin {
                 }
             }
         });
-        embedObserver.observe(document.body, { childList: true, subtree: true });
+        embedObserver.observe(activeDocument.body, { childList: true, subtree: true });
         this.register(() => embedObserver.disconnect());
         this.app.workspace.onLayoutReady(() => {
-            for (const embed of Array.from(document.querySelectorAll<HTMLElement>(".internal-embed"))) {
+            for (const embed of Array.from(activeDocument.querySelectorAll<HTMLElement>(".internal-embed"))) {
                 this.maybeDecorateEmbed(embed);
             }
         });
         // Drop our buttons from any surviving DOM when the plugin unloads.
         this.register(() => {
-            for (const btn of Array.from(document.querySelectorAll(".svge-file-embed > .svge-edit-btn"))) btn.remove();
-            for (const el of Array.from(document.querySelectorAll(".svge-file-embed"))) el.removeClass("svge-file-embed");
+            for (const btn of Array.from(activeDocument.querySelectorAll(".svge-file-embed > .svge-edit-btn"))) btn.remove();
+            for (const el of Array.from(activeDocument.querySelectorAll(".svge-file-embed"))) el.removeClass("svge-file-embed");
         });
 
         // Double-click an embedded svg image to edit it, in any mode.
-        this.registerDomEvent(document, "dblclick", (evt) => {
+        this.registerDomEvent(activeDocument, "dblclick", (evt) => {
             const embed = (evt.target as HTMLElement | null)?.closest?.(".internal-embed");
-            if (!(embed instanceof HTMLElement)) return;
+            if (!embed?.instanceOf(HTMLElement)) return;
             const src = embed.getAttribute("src");
             if (!src || !isSvgLink(src)) return;
             evt.preventDefault();
@@ -118,7 +118,7 @@ export default class SvgEditorPlugin extends Plugin {
             checkCallback: (checking) => {
                 const anyApp = this.app as unknown as { emulateMobile?: (on: boolean) => void };
                 if (typeof anyApp.emulateMobile !== "function") return false;
-                if (!checking) anyApp.emulateMobile(!document.body.classList.contains("is-mobile"));
+                if (!checking) anyApp.emulateMobile(!activeDocument.body.classList.contains("is-mobile"));
                 return true;
             },
         });
@@ -134,7 +134,7 @@ export default class SvgEditorPlugin extends Plugin {
         if (source.trim()) {
             try {
                 const svg = parseSvgSource(source);
-                el.appendChild(document.importNode(svg, true));
+                el.appendChild(el.doc.importNode(svg, true));
                 parsedOk = true;
             } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
@@ -352,7 +352,7 @@ export default class SvgEditorPlugin extends Plugin {
             ...lines.slice(e + 1),
         ]);
         if (!ok) {
-            await this.app.vault.delete(file);
+            await this.app.fileManager.trashFile(file);
             new Notice("SVG Editor: could not rewrite the note — the block changed under us.");
             return null;
         }
@@ -445,7 +445,7 @@ export default class SvgEditorPlugin extends Plugin {
     private refreshEmbedsOf(file: TFile): void {
         const fresh = this.app.vault.getResourcePath(file);
         const base = fresh.split("?")[0];
-        for (const img of Array.from(document.querySelectorAll<HTMLImageElement>("img"))) {
+        for (const img of Array.from(activeDocument.querySelectorAll<HTMLImageElement>("img"))) {
             if (img.src.split("?")[0] === base) img.src = fresh;
         }
     }

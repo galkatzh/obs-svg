@@ -140,9 +140,9 @@ export class SvgEditorCore {
     private activePointerId = -1;
 
     constructor(private containerEl: HTMLElement) {
-        this.svgEl = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
+        this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
         this.svgEl.classList.add("svge-canvas");
-        this.overlayEl = document.createElementNS(SVG_NS, "g") as SVGGElement;
+        this.overlayEl = containerEl.doc.createElementNS(SVG_NS, "g");
         this.overlayEl.setAttribute("data-svge-overlay", "");
         this.svgEl.appendChild(this.overlayEl);
         containerEl.appendChild(this.svgEl);
@@ -152,9 +152,9 @@ export class SvgEditorCore {
     }
 
     destroy(): void {
-        window.removeEventListener("pointermove", this.boundPointerMove);
-        window.removeEventListener("pointerup", this.boundPointerUp);
-        window.removeEventListener("pointercancel", this.boundPointerUp);
+        this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
+        this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
+        this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
         this.svgEl.remove();
     }
 
@@ -206,7 +206,7 @@ export class SvgEditorCore {
         // Swap in the parsed content, keeping the overlay group on top.
         this.contentChildren().forEach((el) => el.remove());
         for (const child of Array.from(parsed.childNodes)) {
-            this.svgEl.insertBefore(document.importNode(child, true), this.overlayEl);
+            this.svgEl.insertBefore(this.svgEl.doc.importNode(child, true), this.overlayEl);
         }
 
         this.clearSelection();
@@ -426,7 +426,7 @@ export class SvgEditorCore {
         for (const el of this.selection) {
             const bb = this.svgBBox(el);
             const pad = 2;
-            const rect = document.createElementNS(SVG_NS, "rect");
+            const rect = this.svgEl.doc.createElementNS(SVG_NS, "rect");
             rect.setAttribute("class", "svge-selbox");
             rect.setAttribute("x", String(bb.x - pad));
             rect.setAttribute("y", String(bb.y - pad));
@@ -495,7 +495,7 @@ export class SvgEditorCore {
                 };
             } else {
                 if (!e.shiftKey) this.clearSelection();
-                const marquee = document.createElementNS(SVG_NS, "rect") as SVGRectElement;
+                const marquee = this.svgEl.doc.createElementNS(SVG_NS, "rect");
                 marquee.setAttribute("class", "svge-marquee");
                 marquee.setAttribute("x", String(p.x));
                 marquee.setAttribute("y", String(p.y));
@@ -507,7 +507,7 @@ export class SvgEditorCore {
             let el: SVGGraphicsElement;
             switch (this.tool) {
                 case "line": {
-                    el = document.createElementNS(SVG_NS, "line") as SVGGraphicsElement;
+                    el = this.svgEl.doc.createElementNS(SVG_NS, "line");
                     el.setAttribute("x1", String(round(p.x)));
                     el.setAttribute("y1", String(round(p.y)));
                     el.setAttribute("x2", String(round(p.x)));
@@ -515,14 +515,14 @@ export class SvgEditorCore {
                     break;
                 }
                 case "circle": {
-                    el = document.createElementNS(SVG_NS, "circle") as SVGGraphicsElement;
+                    el = this.svgEl.doc.createElementNS(SVG_NS, "circle");
                     el.setAttribute("cx", String(round(p.x)));
                     el.setAttribute("cy", String(round(p.y)));
                     el.setAttribute("r", "0");
                     break;
                 }
                 case "rect": {
-                    el = document.createElementNS(SVG_NS, "rect") as SVGGraphicsElement;
+                    el = this.svgEl.doc.createElementNS(SVG_NS, "rect");
                     el.setAttribute("x", String(round(p.x)));
                     el.setAttribute("y", String(round(p.y)));
                     el.setAttribute("width", "0");
@@ -530,7 +530,7 @@ export class SvgEditorCore {
                     break;
                 }
                 default: {
-                    el = document.createElementNS(SVG_NS, "path") as SVGGraphicsElement;
+                    el = this.svgEl.doc.createElementNS(SVG_NS, "path");
                     el.setAttribute("d", `M${round(p.x)},${round(p.y)}`);
                     break;
                 }
@@ -542,9 +542,9 @@ export class SvgEditorCore {
 
         if (this.draw) {
             this.activePointerId = e.pointerId;
-            window.addEventListener("pointermove", this.boundPointerMove);
-            window.addEventListener("pointerup", this.boundPointerUp);
-            window.addEventListener("pointercancel", this.boundPointerUp);
+            this.svgEl.win.addEventListener("pointermove", this.boundPointerMove);
+            this.svgEl.win.addEventListener("pointerup", this.boundPointerUp);
+            this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
             e.preventDefault();
         }
     }
@@ -569,7 +569,7 @@ export class SvgEditorCore {
             case "delete": {
                 // Moves are captured on window, so resolve the hovered element
                 // from the pointer position rather than the event target.
-                this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+                this.markForDeletion(d, this.svgEl.doc.elementFromPoint(e.clientX, e.clientY));
                 break;
             }
             case "select": {
@@ -618,15 +618,15 @@ export class SvgEditorCore {
     private handlePointerUp(e: PointerEvent): void {
         if (e.pointerId !== this.activePointerId) return;
         this.activePointerId = -1;
-        window.removeEventListener("pointermove", this.boundPointerMove);
-        window.removeEventListener("pointerup", this.boundPointerUp);
-        window.removeEventListener("pointercancel", this.boundPointerUp);
+        this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
+        this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
+        this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
         const d = this.draw;
         this.draw = null;
         if (!d) return;
 
         if (d.kind === "delete") {
-            this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+            this.markForDeletion(d, this.svgEl.doc.elementFromPoint(e.clientX, e.clientY));
             const marks = d.deleteMarks!;
             if (marks.size > 0) {
                 for (const el of marks.keys()) el.remove();

@@ -387,6 +387,12 @@ svg.svge-canvas .svge-marquee {
     margin-top: var(--size-4-2);
 }
 
+/* Offscreen host used by the self-test's render checks. */
+.svge-selftest-host {
+    position: fixed;
+    left: -9999px;
+}
+
 /* ==================================================================
    Compact layout — mobile devices and narrow windows
    (`svge-compact` is set by the modal from Platform.isMobile /
