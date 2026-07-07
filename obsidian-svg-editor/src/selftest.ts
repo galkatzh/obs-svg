@@ -457,6 +457,30 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
             comp5.unload();
             host5.remove();
         }
+
+        // ---- 18. Live-preview-style embeds (no post-processor) get decorated ----
+        // The document observer must pick up any .internal-embed that appears,
+        // and replace stale buttons left by an earlier plugin instance.
+        const lpHost = document.body.createDiv();
+        lpHost.style.position = "fixed";
+        lpHost.style.left = "-9999px";
+        try {
+            const lpEmbed = lpHost.createEl("div", {
+                cls: "internal-embed",
+                attr: { src: FILE_PATH },
+            });
+            const staleBtn = lpEmbed.createEl("button", { cls: "svge-edit-btn" });
+            await sleep(120);
+            check(
+                "observer decorates live-preview embeds",
+                !!lpEmbed.querySelector(":scope > .svge-convert-btn") &&
+                    !!lpEmbed.querySelector(":scope > .svge-edit-btn:not(.svge-convert-btn)"),
+                lpEmbed.className
+            );
+            check("stale buttons from old plugin instance replaced", !staleBtn.isConnected, "");
+        } finally {
+            lpHost.remove();
+        }
     } catch (e) {
         check("self-test crashed", false, e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e));
     } finally {

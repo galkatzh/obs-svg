@@ -1295,6 +1295,25 @@ ${blockSource}
       comp5.unload();
       host5.remove();
     }
+    const lpHost = document.body.createDiv();
+    lpHost.style.position = "fixed";
+    lpHost.style.left = "-9999px";
+    try {
+      const lpEmbed = lpHost.createEl("div", {
+        cls: "internal-embed",
+        attr: { src: FILE_PATH }
+      });
+      const staleBtn = lpEmbed.createEl("button", { cls: "svge-edit-btn" });
+      await sleep(120);
+      check(
+        "observer decorates live-preview embeds",
+        !!lpEmbed.querySelector(":scope > .svge-convert-btn") && !!lpEmbed.querySelector(":scope > .svge-edit-btn:not(.svge-convert-btn)"),
+        lpEmbed.className
+      );
+      check("stale buttons from old plugin instance replaced", !staleBtn.isConnected, "");
+    } finally {
+      lpHost.remove();
+    }
   } catch (e) {
     check("self-test crashed", false, e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e));
@@ -1335,6 +1354,31 @@ var SvgEditorPlugin = class extends import_obsidian3.Plugin {
         if (!src || !isSvgLink(src)) continue;
         ctx.addChild(new SvgEmbedDecorator(this, embed, src, ctx.sourcePath));
       }
+    });
+    const embedObserver = new MutationObserver((mutations) => {
+      for (const mut of mutations) {
+        if (mut.target instanceof HTMLElement && mut.target.matches(".internal-embed")) {
+          this.maybeDecorateEmbed(mut.target);
+        }
+        for (const node of Array.from(mut.addedNodes)) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.matches(".internal-embed")) this.maybeDecorateEmbed(node);
+          for (const embed of Array.from(node.querySelectorAll(".internal-embed"))) {
+            this.maybeDecorateEmbed(embed);
+          }
+        }
+      }
+    });
+    embedObserver.observe(document.body, { childList: true, subtree: true });
+    this.register(() => embedObserver.disconnect());
+    this.app.workspace.onLayoutReady(() => {
+      for (const embed of Array.from(document.querySelectorAll(".internal-embed"))) {
+        this.maybeDecorateEmbed(embed);
+      }
+    });
+    this.register(() => {
+      for (const btn of Array.from(document.querySelectorAll(".svge-file-embed > .svge-edit-btn"))) btn.remove();
+      for (const el of Array.from(document.querySelectorAll(".svge-file-embed"))) el.removeClass("svge-file-embed");
     });
     this.registerDomEvent(document, "dblclick", (evt) => {
       const embed = evt.target?.closest?.(".internal-embed");
@@ -1518,6 +1562,41 @@ ${newSource}
     modal.open();
     return modal;
   }
+  /** Decorate an .internal-embed element if it embeds an .svg file. */
+  maybeDecorateEmbed(el) {
+    const src = el.getAttribute("src");
+    if (!src || !isSvgLink(src)) return;
+    this.decorateSvgEmbed(el, src, () => this.app.workspace.getActiveFile()?.path ?? "");
+  }
+  /**
+   * Add the edit + convert buttons to an svg embed. Idempotent; also
+   * replaces stale buttons left behind by an earlier plugin instance.
+   */
+  decorateSvgEmbed(el, src, getSourcePath) {
+    if (el.querySelector(":scope > .svge-convert-btn")) return;
+    for (const stale of Array.from(el.querySelectorAll(":scope > .svge-edit-btn"))) stale.remove();
+    el.addClass("svge-file-embed");
+    const editBtn = el.createEl("button", {
+      cls: "svge-edit-btn",
+      attr: { "aria-label": "Edit SVG file" }
+    });
+    (0, import_obsidian3.setIcon)(editBtn, "pencil");
+    editBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.editSvgFileBySrc(src, getSourcePath());
+    });
+    const convertBtn = el.createEl("button", {
+      cls: "svge-edit-btn svge-convert-btn",
+      attr: { "aria-label": "Convert to inline svg block" }
+    });
+    (0, import_obsidian3.setIcon)(convertBtn, "code");
+    convertBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.convertEmbedToBlock(src, getSourcePath());
+    });
+  }
   // ------------------------------------------------------------------
   // Inline block ⇄ embedded file conversion
   // ------------------------------------------------------------------
@@ -1689,28 +1768,6 @@ var SvgEmbedDecorator = class extends import_obsidian3.MarkdownRenderChild {
     this.observer = null;
   }
   decorate() {
-    const el = this.containerEl;
-    if (el.querySelector(":scope > .svge-edit-btn")) return;
-    el.addClass("svge-file-embed");
-    const btn = el.createEl("button", {
-      cls: "svge-edit-btn",
-      attr: { "aria-label": "Edit SVG file" }
-    });
-    (0, import_obsidian3.setIcon)(btn, "pencil");
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      void this.plugin.editSvgFileBySrc(this.src, this.sourcePath);
-    });
-    const convertBtn = el.createEl("button", {
-      cls: "svge-edit-btn svge-convert-btn",
-      attr: { "aria-label": "Convert to inline svg block" }
-    });
-    (0, import_obsidian3.setIcon)(convertBtn, "code");
-    convertBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      void this.plugin.convertEmbedToBlock(this.src, this.sourcePath);
-    });
+    this.plugin.decorateSvgEmbed(this.containerEl, this.src, () => this.sourcePath);
   }
 };

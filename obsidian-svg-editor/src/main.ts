@@ -33,8 +33,38 @@ export default class SvgEditorPlugin extends Plugin {
             }
         });
 
-        // Live preview renders embeds outside the post-processor pipeline:
-        // double-click an embedded svg image to edit it, in any mode.
+        // Live preview renders embeds outside the post-processor pipeline, and
+        // views that are already open keep their old DOM after a plugin
+        // (re)load — watch the whole document and decorate any svg embed that
+        // appears or has its content swapped by Obsidian's embed loader.
+        const embedObserver = new MutationObserver((mutations) => {
+            for (const mut of mutations) {
+                if (mut.target instanceof HTMLElement && mut.target.matches(".internal-embed")) {
+                    this.maybeDecorateEmbed(mut.target);
+                }
+                for (const node of Array.from(mut.addedNodes)) {
+                    if (!(node instanceof HTMLElement)) continue;
+                    if (node.matches(".internal-embed")) this.maybeDecorateEmbed(node);
+                    for (const embed of Array.from(node.querySelectorAll<HTMLElement>(".internal-embed"))) {
+                        this.maybeDecorateEmbed(embed);
+                    }
+                }
+            }
+        });
+        embedObserver.observe(document.body, { childList: true, subtree: true });
+        this.register(() => embedObserver.disconnect());
+        this.app.workspace.onLayoutReady(() => {
+            for (const embed of Array.from(document.querySelectorAll<HTMLElement>(".internal-embed"))) {
+                this.maybeDecorateEmbed(embed);
+            }
+        });
+        // Drop our buttons from any surviving DOM when the plugin unloads.
+        this.register(() => {
+            for (const btn of Array.from(document.querySelectorAll(".svge-file-embed > .svge-edit-btn"))) btn.remove();
+            for (const el of Array.from(document.querySelectorAll(".svge-file-embed"))) el.removeClass("svge-file-embed");
+        });
+
+        // Double-click an embedded svg image to edit it, in any mode.
         this.registerDomEvent(document, "dblclick", (evt) => {
             const embed = (evt.target as HTMLElement | null)?.closest?.(".internal-embed");
             if (!(embed instanceof HTMLElement)) return;
@@ -255,6 +285,45 @@ export default class SvgEditorPlugin extends Plugin {
         return modal;
     }
 
+    /** Decorate an .internal-embed element if it embeds an .svg file. */
+    maybeDecorateEmbed(el: HTMLElement): void {
+        const src = el.getAttribute("src");
+        if (!src || !isSvgLink(src)) return;
+        this.decorateSvgEmbed(el, src, () => this.app.workspace.getActiveFile()?.path ?? "");
+    }
+
+    /**
+     * Add the edit + convert buttons to an svg embed. Idempotent; also
+     * replaces stale buttons left behind by an earlier plugin instance.
+     */
+    decorateSvgEmbed(el: HTMLElement, src: string, getSourcePath: () => string): void {
+        if (el.querySelector(":scope > .svge-convert-btn")) return;
+        for (const stale of Array.from(el.querySelectorAll(":scope > .svge-edit-btn"))) stale.remove();
+        el.addClass("svge-file-embed");
+
+        const editBtn = el.createEl("button", {
+            cls: "svge-edit-btn",
+            attr: { "aria-label": "Edit SVG file" },
+        });
+        setIcon(editBtn, "pencil");
+        editBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void this.editSvgFileBySrc(src, getSourcePath());
+        });
+
+        const convertBtn = el.createEl("button", {
+            cls: "svge-edit-btn svge-convert-btn",
+            attr: { "aria-label": "Convert to inline svg block" },
+        });
+        setIcon(convertBtn, "code");
+        convertBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void this.convertEmbedToBlock(src, getSourcePath());
+        });
+    }
+
     // ------------------------------------------------------------------
     // Inline block ⇄ embedded file conversion
     // ------------------------------------------------------------------
@@ -461,28 +530,8 @@ class SvgEmbedDecorator extends MarkdownRenderChild {
     }
 
     private decorate(): void {
-        const el = this.containerEl;
-        if (el.querySelector(":scope > .svge-edit-btn")) return;
-        el.addClass("svge-file-embed");
-        const btn = el.createEl("button", {
-            cls: "svge-edit-btn",
-            attr: { "aria-label": "Edit SVG file" },
-        });
-        setIcon(btn, "pencil");
-        btn.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            void this.plugin.editSvgFileBySrc(this.src, this.sourcePath);
-        });
-        const convertBtn = el.createEl("button", {
-            cls: "svge-edit-btn svge-convert-btn",
-            attr: { "aria-label": "Convert to inline svg block" },
-        });
-        setIcon(convertBtn, "code");
-        convertBtn.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            void this.plugin.convertEmbedToBlock(this.src, this.sourcePath);
-        });
+        // The post-processor context knows the true source path (better than
+        // the active-file fallback used for observer-discovered embeds).
+        this.plugin.decorateSvgEmbed(this.containerEl, this.src, () => this.sourcePath);
     }
 }
