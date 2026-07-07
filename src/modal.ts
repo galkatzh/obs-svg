@@ -41,6 +41,7 @@ export class SvgEditorModal extends Modal {
     private opacityValue!: HTMLElement;
     private selectionNoteEl!: HTMLElement;
     private deleteSelBtn!: HTMLButtonElement;
+    private zoomValueBtn!: HTMLButtonElement;
 
     /** Compact layout: phones/tablets, or a narrow desktop window. */
     private compactQuery = activeWindow.matchMedia("(max-width: 640px)");
@@ -176,6 +177,20 @@ export class SvgEditorModal extends Modal {
             this.core.setStyle({ opacity: parseFloat(this.opacityInput.value) / 100 });
         });
 
+        const zoomGroup = props.createDiv({ cls: "svge-prop-group svge-zoom", attr: { "aria-label": "Zoom" } });
+        const zoomOutBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom out (Ctrl+-)" } });
+        setIcon(zoomOutBtn, "zoom-out");
+        zoomOutBtn.addEventListener("click", () => this.core.zoomBy(1 / 1.25));
+        this.zoomValueBtn = zoomGroup.createEl("button", {
+            cls: "svge-zoom-value",
+            text: "100%",
+            attr: { "aria-label": "Reset zoom (Ctrl+0)" },
+        });
+        this.zoomValueBtn.addEventListener("click", () => this.core.resetZoom());
+        const zoomInBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom in (Ctrl+=)" } });
+        setIcon(zoomInBtn, "zoom-in");
+        zoomInBtn.addEventListener("click", () => this.core.zoomBy(1.25));
+
         const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
         this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
         setIcon(this.deleteSelBtn, "delete");
@@ -213,6 +228,7 @@ export class SvgEditorModal extends Modal {
             this.heightInput.value = String(h);
         };
         this.core.onSelectionChange = (sel) => this.reflectSelection(sel);
+        this.core.onZoomChange = (z) => this.zoomValueBtn.setText(`${Math.round(z * 100)}%`);
 
         try {
             this.core.load(this.initialSource.trim() ? this.initialSource : emptySvgSource());
@@ -251,6 +267,21 @@ export class SvgEditorModal extends Modal {
         });
         this.scope.register(["Mod"], "Enter", () => {
             void this.save();
+            return false;
+        });
+        this.scope.register(["Mod"], "=", () => {
+            if (this.mode !== "visual") return true;
+            this.core.zoomBy(1.25);
+            return false;
+        });
+        this.scope.register(["Mod"], "-", () => {
+            if (this.mode !== "visual") return true;
+            this.core.zoomBy(1 / 1.25);
+            return false;
+        });
+        this.scope.register(["Mod"], "0", () => {
+            if (this.mode !== "visual") return true;
+            this.core.resetZoom();
             return false;
         });
 

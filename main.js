@@ -82,6 +82,8 @@ function prettyPrintXml(xml) {
 }
 var DELETE_FADE_FACTOR = 0.6;
 var DELETE_MIN_OPACITY = 0.15;
+var MIN_ZOOM = 0.25;
+var MAX_ZOOM = 8;
 var SvgEditorCore = class {
   constructor(containerEl) {
     this.containerEl = containerEl;
@@ -108,10 +110,19 @@ var SvgEditorCore = class {
     };
     this.onSizeChange = () => {
     };
+    this.onZoomChange = () => {
+    };
     this.boundPointerMove = (e) => this.handlePointerMove(e);
     this.boundPointerUp = (e) => this.handlePointerUp(e);
+    this.boundWheel = (e) => this.handleWheel(e);
     /** Pointer that started the current gesture; other touches are ignored. */
     this.activePointerId = -1;
+    this.windowHooked = false;
+    /** Display-only zoom factor; 1 = fit to container. */
+    this.zoom = 1;
+    /** Live client positions of touch pointers on the canvas (pinch tracking). */
+    this.touches = /* @__PURE__ */ new Map();
+    this.pinch = null;
     this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
     this.svgEl.classList.add("svge-canvas");
     this.overlayEl = containerEl.doc.createElementNS(SVG_NS, "g");
@@ -119,13 +130,30 @@ var SvgEditorCore = class {
     this.svgEl.appendChild(this.overlayEl);
     containerEl.appendChild(this.svgEl);
     this.svgEl.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+    containerEl.addEventListener("wheel", this.boundWheel, { passive: false });
     this.applyViewBox();
   }
   destroy() {
+    this.containerEl.removeEventListener("wheel", this.boundWheel);
+    this.windowHooked = false;
     this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
     this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
     this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
     this.svgEl.remove();
+  }
+  hookWindow() {
+    if (this.windowHooked) return;
+    this.windowHooked = true;
+    this.svgEl.win.addEventListener("pointermove", this.boundPointerMove);
+    this.svgEl.win.addEventListener("pointerup", this.boundPointerUp);
+    this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
+  }
+  unhookWindowIfIdle() {
+    if (!this.windowHooked || this.draw || this.pinch || this.touches.size > 0) return;
+    this.windowHooked = false;
+    this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
+    this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
+    this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
   }
   // ------------------------------------------------------------------
   // Loading / serialization
@@ -209,6 +237,65 @@ var SvgEditorCore = class {
     this.refreshSelectionBoxes();
     this.commit();
     this.onStatus(`Canvas resized to ${w} \xD7 ${h}`);
+  }
+  // ------------------------------------------------------------------
+  // Zoom (display-only; never serialized)
+  // ------------------------------------------------------------------
+  getZoom() {
+    return this.zoom;
+  }
+  zoomBy(factor, focus) {
+    this.setZoom(this.zoom * factor, focus);
+  }
+  resetZoom() {
+    this.setZoom(1);
+  }
+  /**
+   * Set the view zoom, keeping the SVG point under `focus` (client coords,
+   * defaults to the container center) stationary on screen.
+   */
+  setZoom(zoom, focus) {
+    const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+    if (z === this.zoom) return;
+    const rect = this.svgEl.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return;
+    const wrap = this.containerEl;
+    const wrapRect = wrap.getBoundingClientRect();
+    const fx = focus?.x ?? wrapRect.left + wrap.clientWidth / 2;
+    const fy = focus?.y ?? wrapRect.top + wrap.clientHeight / 2;
+    const anchor = this.clientToSvg(fx, fy);
+    const baseW = rect.width / this.zoom;
+    const baseH = rect.height / this.zoom;
+    this.zoom = z;
+    if (z === 1) {
+      this.svgEl.classList.remove("svge-zoomed");
+      this.svgEl.style.removeProperty("width");
+      this.svgEl.style.removeProperty("height");
+    } else {
+      this.svgEl.classList.add("svge-zoomed");
+      this.svgEl.style.width = `${baseW * z}px`;
+      this.svgEl.style.height = `${baseH * z}px`;
+    }
+    const after = this.svgToClient(anchor);
+    wrap.scrollLeft += after.x - fx;
+    wrap.scrollTop += after.y - fy;
+    this.onZoomChange(z);
+    this.onStatus(`Zoom ${Math.round(z * 100)}%`);
+  }
+  handleWheel(e) {
+    e.preventDefault();
+    const scale = e.deltaMode === 1 ? 0.05 : 15e-4;
+    this.zoomBy(Math.exp(-e.deltaY * scale), { x: e.clientX, y: e.clientY });
+  }
+  handlePinchMove() {
+    const pinch = this.pinch;
+    const [a, b] = Array.from(this.touches.values());
+    const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    this.containerEl.scrollLeft -= center.x - pinch.lastCenter.x;
+    this.containerEl.scrollTop -= center.y - pinch.lastCenter.y;
+    pinch.lastCenter = center;
+    const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    this.setZoom(pinch.startZoom * (dist / pinch.startDist), center);
   }
   // ------------------------------------------------------------------
   // History
@@ -382,11 +469,42 @@ var SvgEditorCore = class {
       y: this.vb.y + (cy - r.top) / (r.height || 1) * this.vb.h
     };
   }
+  svgToClient(p) {
+    const ctm = this.svgEl.getScreenCTM();
+    if (ctm) {
+      const pt = new DOMPoint(p.x, p.y).matrixTransform(ctm);
+      return { x: pt.x, y: pt.y };
+    }
+    const r = this.svgEl.getBoundingClientRect();
+    return {
+      x: r.left + (p.x - this.vb.x) / (this.vb.w || 1) * r.width,
+      y: r.top + (p.y - this.vb.y) / (this.vb.h || 1) * r.height
+    };
+  }
   eventPoint(e) {
     return this.clientToSvg(e.clientX, e.clientY);
   }
   handlePointerDown(e) {
-    if (e.button !== 0 || !e.isPrimary || this.draw) return;
+    if (e.pointerType === "touch") {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      this.hookWindow();
+      if (this.touches.size === 2) {
+        this.cancelDraw();
+        const [a, b] = Array.from(this.touches.values());
+        this.pinch = {
+          startDist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+          startZoom: this.zoom,
+          lastCenter: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+        };
+        e.preventDefault();
+        return;
+      }
+      if (this.touches.size > 2) {
+        e.preventDefault();
+        return;
+      }
+    }
+    if (e.button !== 0 || !e.isPrimary || this.draw || this.pinch) return;
     const p = this.eventPoint(e);
     if (this.tool === "delete") {
       this.draw = { kind: "delete", start: p, deleteMarks: /* @__PURE__ */ new Map() };
@@ -464,10 +582,30 @@ var SvgEditorCore = class {
     }
     if (this.draw) {
       this.activePointerId = e.pointerId;
-      this.svgEl.win.addEventListener("pointermove", this.boundPointerMove);
-      this.svgEl.win.addEventListener("pointerup", this.boundPointerUp);
-      this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
+      this.hookWindow();
       e.preventDefault();
+    }
+  }
+  /** Abort the in-progress gesture, undoing any provisional DOM changes. */
+  cancelDraw() {
+    const d = this.draw;
+    this.draw = null;
+    this.activePointerId = -1;
+    if (!d) return;
+    if (d.kind === "delete") {
+      for (const [el, original] of d.deleteMarks ?? []) {
+        if (original === null) el.removeAttribute("opacity");
+        else el.setAttribute("opacity", original);
+      }
+    } else if (d.kind === "select") {
+      d.marqueeEl?.remove();
+      for (const t of d.moveTargets ?? []) {
+        if (t.baseTransform === null) t.el.removeAttribute("transform");
+        else t.el.setAttribute("transform", t.baseTransform);
+      }
+      this.refreshSelectionBoxes();
+    } else {
+      d.el?.remove();
     }
   }
   /** Queue the shape under the pointer for deletion and fade it as feedback. */
@@ -481,6 +619,13 @@ var SvgEditorCore = class {
     shape.setAttribute("opacity", String(faded));
   }
   handlePointerMove(e) {
+    if (this.touches.has(e.pointerId)) {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.pinch && this.touches.size >= 2) {
+        this.handlePinchMove();
+        return;
+      }
+    }
     if (!this.draw || e.pointerId !== this.activePointerId) return;
     const p = this.eventPoint(e);
     const d = this.draw;
@@ -532,13 +677,17 @@ var SvgEditorCore = class {
     }
   }
   handlePointerUp(e) {
-    if (e.pointerId !== this.activePointerId) return;
+    if (this.touches.delete(e.pointerId) && this.pinch && this.touches.size < 2) {
+      this.pinch = null;
+    }
+    if (e.pointerId !== this.activePointerId) {
+      this.unhookWindowIfIdle();
+      return;
+    }
     this.activePointerId = -1;
-    this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
-    this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
-    this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
     const d = this.draw;
     this.draw = null;
+    this.unhookWindowIfIdle();
     if (!d) return;
     if (d.kind === "delete") {
       this.markForDeletion(d, this.svgEl.doc.elementFromPoint(e.clientX, e.clientY));
@@ -743,6 +892,19 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.opacityValue.setText(this.opacityInput.value);
       this.core.setStyle({ opacity: parseFloat(this.opacityInput.value) / 100 });
     });
+    const zoomGroup = props.createDiv({ cls: "svge-prop-group svge-zoom", attr: { "aria-label": "Zoom" } });
+    const zoomOutBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom out (Ctrl+-)" } });
+    (0, import_obsidian.setIcon)(zoomOutBtn, "zoom-out");
+    zoomOutBtn.addEventListener("click", () => this.core.zoomBy(1 / 1.25));
+    this.zoomValueBtn = zoomGroup.createEl("button", {
+      cls: "svge-zoom-value",
+      text: "100%",
+      attr: { "aria-label": "Reset zoom (Ctrl+0)" }
+    });
+    this.zoomValueBtn.addEventListener("click", () => this.core.resetZoom());
+    const zoomInBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom in (Ctrl+=)" } });
+    (0, import_obsidian.setIcon)(zoomInBtn, "zoom-in");
+    zoomInBtn.addEventListener("click", () => this.core.zoomBy(1.25));
     const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
     this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
     (0, import_obsidian.setIcon)(this.deleteSelBtn, "delete");
@@ -775,6 +937,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.heightInput.value = String(h);
     };
     this.core.onSelectionChange = (sel) => this.reflectSelection(sel);
+    this.core.onZoomChange = (z) => this.zoomValueBtn.setText(`${Math.round(z * 100)}%`);
     try {
       this.core.load(this.initialSource.trim() ? this.initialSource : emptySvgSource());
       this.setMode("visual");
@@ -810,6 +973,21 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     });
     this.scope.register(["Mod"], "Enter", () => {
       void this.save();
+      return false;
+    });
+    this.scope.register(["Mod"], "=", () => {
+      if (this.mode !== "visual") return true;
+      this.core.zoomBy(1.25);
+      return false;
+    });
+    this.scope.register(["Mod"], "-", () => {
+      if (this.mode !== "visual") return true;
+      this.core.zoomBy(1 / 1.25);
+      return false;
+    });
+    this.scope.register(["Mod"], "0", () => {
+      if (this.mode !== "visual") return true;
+      this.core.resetZoom();
       return false;
     });
     this.modalEl.addEventListener("keydown", (evt) => this.handleKeydown(evt));
@@ -1302,6 +1480,74 @@ ${blockSource}
       check("stale buttons from old plugin instance replaced", !staleBtn.isConnected, "");
     } finally {
       lpHost.remove();
+    }
+    {
+      let zModal = null;
+      try {
+        zModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        zModal.open();
+        await sleep(150);
+        const zCore = zModal.core;
+        const zSvg = zCore.svgEl;
+        const zr = zSvg.getBoundingClientRect();
+        const zcx = zr.left + zr.width / 2;
+        const zcy = zr.top + zr.height / 2;
+        zSvg.dispatchEvent(
+          new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -300, clientX: zcx, clientY: zcy })
+        );
+        const wheelZoom = zCore.getZoom();
+        const zrAfter = zSvg.getBoundingClientRect();
+        check(
+          "mouse wheel zooms the canvas in",
+          wheelZoom > 1 && zrAfter.width > zr.width * 1.1,
+          `zoom=${wheelZoom.toFixed(2)}, ${Math.round(zr.width)}px \u2192 ${Math.round(zrAfter.width)}px`
+        );
+        const zSrc = zCore.serialize(true);
+        check(
+          "zoom stays out of the saved source",
+          !zSrc.includes("style=") && !zSrc.includes("svge") && zSrc.includes('width="480"'),
+          zSrc.split("\n")[0] ?? ""
+        );
+        const resetBtn = zModal.modalEl.querySelector(".svge-zoom-value");
+        resetBtn?.click();
+        check(
+          "zoom reset button returns to 100%",
+          zCore.getZoom() === 1 && resetBtn?.textContent === "100%",
+          `zoom=${zCore.getZoom()}, label=${resetBtn?.textContent}`
+        );
+        const preCount = zCore.contentChildren().length;
+        zModal.setTool("rect");
+        const t1 = { pointerId: 21, pointerType: "touch", isPrimary: true };
+        const t2 = { pointerId: 22, pointerType: "touch", isPrimary: false };
+        firePointer(zSvg, "pointerdown", zcx - 20, zcy, t1);
+        firePointer(zSvg, "pointerdown", zcx + 20, zcy, t2);
+        firePointer(window, "pointermove", zcx + 60, zcy, t2);
+        const pinchZoom = zCore.getZoom();
+        check("pinch gesture zooms in", pinchZoom > 1.5, `zoom=${pinchZoom.toFixed(2)}`);
+        firePointer(window, "pointerup", zcx + 60, zcy, t2);
+        firePointer(window, "pointerup", zcx - 20, zcy, t1);
+        check(
+          "second finger cancels the in-progress draw",
+          zCore.contentChildren().length === preCount,
+          `count=${zCore.contentChildren().length}`
+        );
+        zCore.setZoom(2);
+        const zr2 = zSvg.getBoundingClientRect();
+        const { w: docW } = zCore.getCanvasSize();
+        firePointer(zSvg, "pointerdown", zr2.left + zr2.width * 0.25, zr2.top + zr2.height * 0.25);
+        firePointer(window, "pointermove", zr2.left + zr2.width * 0.5, zr2.top + zr2.height * 0.5);
+        firePointer(window, "pointerup", zr2.left + zr2.width * 0.5, zr2.top + zr2.height * 0.5);
+        const zRect = zCore.contentChildren().find((c) => c.tagName === "rect");
+        const zRectW = parseFloat(zRect?.getAttribute("width") ?? "0");
+        check(
+          "drawing while zoomed maps to correct SVG coords",
+          Math.abs(zRectW - docW * 0.25) < 1,
+          `width=${zRectW}, expected\u2248${docW * 0.25}`
+        );
+      } finally {
+        zModal?.close();
+      }
     }
   } catch (e) {
     check("self-test crashed", false, e instanceof Error ? `${e.message}

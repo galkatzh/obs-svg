@@ -472,6 +472,85 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         } finally {
             lpHost.remove();
         }
+
+        // ---- 19. Zoom: mouse wheel, pinch, reset; view-only ----
+        {
+            let zModal: SvgEditorModal | null = null;
+            try {
+                zModal = new SvgEditorModal(plugin.app, "", () => {});
+                zModal.open();
+                await sleep(150);
+                const zCore = zModal.core;
+                const zSvg = zCore.svgEl;
+                const zr = zSvg.getBoundingClientRect();
+                const zcx = zr.left + zr.width / 2;
+                const zcy = zr.top + zr.height / 2;
+
+                // Wheel over the canvas zooms in around the cursor.
+                zSvg.dispatchEvent(
+                    new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -300, clientX: zcx, clientY: zcy })
+                );
+                const wheelZoom = zCore.getZoom();
+                const zrAfter = zSvg.getBoundingClientRect();
+                check(
+                    "mouse wheel zooms the canvas in",
+                    wheelZoom > 1 && zrAfter.width > zr.width * 1.1,
+                    `zoom=${wheelZoom.toFixed(2)}, ${Math.round(zr.width)}px → ${Math.round(zrAfter.width)}px`
+                );
+
+                // Zoom is display-only: nothing about it may reach the saved source.
+                const zSrc = zCore.serialize(true);
+                check(
+                    "zoom stays out of the saved source",
+                    !zSrc.includes("style=") && !zSrc.includes("svge") && zSrc.includes('width="480"'),
+                    zSrc.split("\n")[0] ?? ""
+                );
+
+                // The % button resets to fit.
+                const resetBtn = zModal.modalEl.querySelector<HTMLButtonElement>(".svge-zoom-value");
+                resetBtn?.click();
+                check(
+                    "zoom reset button returns to 100%",
+                    zCore.getZoom() === 1 && resetBtn?.textContent === "100%",
+                    `zoom=${zCore.getZoom()}, label=${resetBtn?.textContent}`
+                );
+
+                // Pinch: a second finger cancels the in-progress draw and zooms.
+                const preCount = zCore.contentChildren().length;
+                zModal.setTool("rect");
+                const t1: PointerEventInit = { pointerId: 21, pointerType: "touch", isPrimary: true };
+                const t2: PointerEventInit = { pointerId: 22, pointerType: "touch", isPrimary: false };
+                firePointer(zSvg, "pointerdown", zcx - 20, zcy, t1);
+                firePointer(zSvg, "pointerdown", zcx + 20, zcy, t2);
+                firePointer(window, "pointermove", zcx + 60, zcy, t2); // spread: 40px → 80px
+                const pinchZoom = zCore.getZoom();
+                check("pinch gesture zooms in", pinchZoom > 1.5, `zoom=${pinchZoom.toFixed(2)}`);
+                firePointer(window, "pointerup", zcx + 60, zcy, t2);
+                firePointer(window, "pointerup", zcx - 20, zcy, t1);
+                check(
+                    "second finger cancels the in-progress draw",
+                    zCore.contentChildren().length === preCount,
+                    `count=${zCore.contentChildren().length}`
+                );
+
+                // Drawing while zoomed still lands at the right SVG coordinates.
+                zCore.setZoom(2);
+                const zr2 = zSvg.getBoundingClientRect();
+                const { w: docW } = zCore.getCanvasSize();
+                firePointer(zSvg, "pointerdown", zr2.left + zr2.width * 0.25, zr2.top + zr2.height * 0.25);
+                firePointer(window, "pointermove", zr2.left + zr2.width * 0.5, zr2.top + zr2.height * 0.5);
+                firePointer(window, "pointerup", zr2.left + zr2.width * 0.5, zr2.top + zr2.height * 0.5);
+                const zRect = zCore.contentChildren().find((c) => c.tagName === "rect");
+                const zRectW = parseFloat(zRect?.getAttribute("width") ?? "0");
+                check(
+                    "drawing while zoomed maps to correct SVG coords",
+                    Math.abs(zRectW - docW * 0.25) < 1,
+                    `width=${zRectW}, expected≈${docW * 0.25}`
+                );
+            } finally {
+                zModal?.close();
+            }
+        }
     } catch (e) {
         check("self-test crashed", false, e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e));
     } finally {

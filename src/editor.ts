@@ -106,6 +106,16 @@ interface DrawState {
 const DELETE_FADE_FACTOR = 0.6;
 const DELETE_MIN_OPACITY = 0.15;
 
+// View zoom bounds (zoom is display-only and never touches the saved SVG).
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 8;
+
+interface PinchState {
+    startDist: number;
+    startZoom: number;
+    lastCenter: Point;
+}
+
 export class SvgEditorCore {
     svgEl: SVGSVGElement;
     private overlayEl: SVGGElement;
@@ -133,11 +143,20 @@ export class SvgEditorCore {
     onHistoryChange: (canUndo: boolean, canRedo: boolean) => void = () => {};
     onStatus: (msg: string) => void = () => {};
     onSizeChange: (w: number, h: number) => void = () => {};
+    onZoomChange: (zoom: number) => void = () => {};
 
     private boundPointerMove = (e: PointerEvent) => this.handlePointerMove(e);
     private boundPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
+    private boundWheel = (e: WheelEvent) => this.handleWheel(e);
     /** Pointer that started the current gesture; other touches are ignored. */
     private activePointerId = -1;
+    private windowHooked = false;
+
+    /** Display-only zoom factor; 1 = fit to container. */
+    private zoom = 1;
+    /** Live client positions of touch pointers on the canvas (pinch tracking). */
+    private touches = new Map<number, Point>();
+    private pinch: PinchState | null = null;
 
     constructor(private containerEl: HTMLElement) {
         this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
@@ -148,14 +167,33 @@ export class SvgEditorCore {
         containerEl.appendChild(this.svgEl);
 
         this.svgEl.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+        containerEl.addEventListener("wheel", this.boundWheel, { passive: false });
         this.applyViewBox();
     }
 
     destroy(): void {
+        this.containerEl.removeEventListener("wheel", this.boundWheel);
+        this.windowHooked = false;
         this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
         this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
         this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
         this.svgEl.remove();
+    }
+
+    private hookWindow(): void {
+        if (this.windowHooked) return;
+        this.windowHooked = true;
+        this.svgEl.win.addEventListener("pointermove", this.boundPointerMove);
+        this.svgEl.win.addEventListener("pointerup", this.boundPointerUp);
+        this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
+    }
+
+    private unhookWindowIfIdle(): void {
+        if (!this.windowHooked || this.draw || this.pinch || this.touches.size > 0) return;
+        this.windowHooked = false;
+        this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
+        this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
+        this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
     }
 
     // ------------------------------------------------------------------
@@ -257,6 +295,79 @@ export class SvgEditorCore {
         this.refreshSelectionBoxes();
         this.commit();
         this.onStatus(`Canvas resized to ${w} × ${h}`);
+    }
+
+    // ------------------------------------------------------------------
+    // Zoom (display-only; never serialized)
+    // ------------------------------------------------------------------
+
+    getZoom(): number {
+        return this.zoom;
+    }
+
+    zoomBy(factor: number, focus?: Point): void {
+        this.setZoom(this.zoom * factor, focus);
+    }
+
+    resetZoom(): void {
+        this.setZoom(1);
+    }
+
+    /**
+     * Set the view zoom, keeping the SVG point under `focus` (client coords,
+     * defaults to the container center) stationary on screen.
+     */
+    setZoom(zoom: number, focus?: Point): void {
+        const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+        if (z === this.zoom) return;
+        const rect = this.svgEl.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return; // hidden canvas
+
+        const wrap = this.containerEl;
+        const wrapRect = wrap.getBoundingClientRect();
+        const fx = focus?.x ?? wrapRect.left + wrap.clientWidth / 2;
+        const fy = focus?.y ?? wrapRect.top + wrap.clientHeight / 2;
+        const anchor = this.clientToSvg(fx, fy);
+
+        const baseW = rect.width / this.zoom;
+        const baseH = rect.height / this.zoom;
+        this.zoom = z;
+        if (z === 1) {
+            // Back to fit-to-container sizing.
+            this.svgEl.classList.remove("svge-zoomed");
+            this.svgEl.style.removeProperty("width");
+            this.svgEl.style.removeProperty("height");
+        } else {
+            this.svgEl.classList.add("svge-zoomed");
+            this.svgEl.style.width = `${baseW * z}px`;
+            this.svgEl.style.height = `${baseH * z}px`;
+        }
+
+        // Scroll so the anchor point stays under the cursor/pinch center.
+        const after = this.svgToClient(anchor);
+        wrap.scrollLeft += after.x - fx;
+        wrap.scrollTop += after.y - fy;
+
+        this.onZoomChange(z);
+        this.onStatus(`Zoom ${Math.round(z * 100)}%`);
+    }
+
+    private handleWheel(e: WheelEvent): void {
+        e.preventDefault();
+        const scale = e.deltaMode === 1 ? 0.05 : 0.0015; // line- vs pixel-based wheels
+        this.zoomBy(Math.exp(-e.deltaY * scale), { x: e.clientX, y: e.clientY });
+    }
+
+    private handlePinchMove(): void {
+        const pinch = this.pinch!;
+        const [a, b] = Array.from(this.touches.values());
+        const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        // Two-finger drag pans the scrollable canvas.
+        this.containerEl.scrollLeft -= center.x - pinch.lastCenter.x;
+        this.containerEl.scrollTop -= center.y - pinch.lastCenter.y;
+        pinch.lastCenter = center;
+        const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        this.setZoom(pinch.startZoom * (dist / pinch.startDist), center);
     }
 
     // ------------------------------------------------------------------
@@ -453,13 +564,46 @@ export class SvgEditorCore {
         };
     }
 
+    private svgToClient(p: Point): Point {
+        const ctm = this.svgEl.getScreenCTM();
+        if (ctm) {
+            const pt = new DOMPoint(p.x, p.y).matrixTransform(ctm);
+            return { x: pt.x, y: pt.y };
+        }
+        const r = this.svgEl.getBoundingClientRect();
+        return {
+            x: r.left + ((p.x - this.vb.x) / (this.vb.w || 1)) * r.width,
+            y: r.top + ((p.y - this.vb.y) / (this.vb.h || 1)) * r.height,
+        };
+    }
+
     private eventPoint(e: PointerEvent): Point {
         return this.clientToSvg(e.clientX, e.clientY);
     }
 
     private handlePointerDown(e: PointerEvent): void {
+        if (e.pointerType === "touch") {
+            this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            this.hookWindow();
+            if (this.touches.size === 2) {
+                // Second finger: abort any in-progress gesture and pinch-zoom instead.
+                this.cancelDraw();
+                const [a, b] = Array.from(this.touches.values());
+                this.pinch = {
+                    startDist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+                    startZoom: this.zoom,
+                    lastCenter: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+                };
+                e.preventDefault();
+                return;
+            }
+            if (this.touches.size > 2) {
+                e.preventDefault();
+                return;
+            }
+        }
         // Primary button/finger only; a second touch must not start a new gesture.
-        if (e.button !== 0 || !e.isPrimary || this.draw) return;
+        if (e.button !== 0 || !e.isPrimary || this.draw || this.pinch) return;
         const p = this.eventPoint(e);
 
         if (this.tool === "delete") {
@@ -542,10 +686,31 @@ export class SvgEditorCore {
 
         if (this.draw) {
             this.activePointerId = e.pointerId;
-            this.svgEl.win.addEventListener("pointermove", this.boundPointerMove);
-            this.svgEl.win.addEventListener("pointerup", this.boundPointerUp);
-            this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
+            this.hookWindow();
             e.preventDefault();
+        }
+    }
+
+    /** Abort the in-progress gesture, undoing any provisional DOM changes. */
+    private cancelDraw(): void {
+        const d = this.draw;
+        this.draw = null;
+        this.activePointerId = -1;
+        if (!d) return;
+        if (d.kind === "delete") {
+            for (const [el, original] of d.deleteMarks ?? []) {
+                if (original === null) el.removeAttribute("opacity");
+                else el.setAttribute("opacity", original);
+            }
+        } else if (d.kind === "select") {
+            d.marqueeEl?.remove();
+            for (const t of d.moveTargets ?? []) {
+                if (t.baseTransform === null) t.el.removeAttribute("transform");
+                else t.el.setAttribute("transform", t.baseTransform);
+            }
+            this.refreshSelectionBoxes();
+        } else {
+            d.el?.remove();
         }
     }
 
@@ -561,6 +726,13 @@ export class SvgEditorCore {
     }
 
     private handlePointerMove(e: PointerEvent): void {
+        if (this.touches.has(e.pointerId)) {
+            this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (this.pinch && this.touches.size >= 2) {
+                this.handlePinchMove();
+                return;
+            }
+        }
         if (!this.draw || e.pointerId !== this.activePointerId) return;
         const p = this.eventPoint(e);
         const d = this.draw;
@@ -616,13 +788,17 @@ export class SvgEditorCore {
     }
 
     private handlePointerUp(e: PointerEvent): void {
-        if (e.pointerId !== this.activePointerId) return;
+        if (this.touches.delete(e.pointerId) && this.pinch && this.touches.size < 2) {
+            this.pinch = null;
+        }
+        if (e.pointerId !== this.activePointerId) {
+            this.unhookWindowIfIdle();
+            return;
+        }
         this.activePointerId = -1;
-        this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
-        this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
-        this.svgEl.win.removeEventListener("pointercancel", this.boundPointerUp);
         const d = this.draw;
         this.draw = null;
+        this.unhookWindowIfIdle();
         if (!d) return;
 
         if (d.kind === "delete") {
