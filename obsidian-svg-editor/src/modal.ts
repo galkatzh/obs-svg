@@ -5,7 +5,7 @@
  * buttons, style controls, undo/redo, canvas size and Save/Cancel.
  */
 
-import { App, Modal, Notice, setIcon } from "obsidian";
+import { App, Modal, Notice, Platform, setIcon } from "obsidian";
 import { emptySvgSource, SvgEditorCore, Tool } from "./editor";
 
 const TOOLS: { tool: Tool; icon: string; label: string; key: string }[] = [
@@ -40,6 +40,16 @@ export class SvgEditorModal extends Modal {
     private opacityInput!: HTMLInputElement;
     private opacityValue!: HTMLElement;
     private selectionNoteEl!: HTMLElement;
+    private deleteSelBtn!: HTMLButtonElement;
+
+    /** Compact layout: phones/tablets, or a narrow desktop window. */
+    private compactQuery = window.matchMedia("(max-width: 640px)");
+    private updateCompact = (): void => {
+        this.modalEl.toggleClass(
+            "svge-compact",
+            Platform.isMobile || document.body.classList.contains("is-mobile") || this.compactQuery.matches
+        );
+    };
 
     constructor(
         app: App,
@@ -51,6 +61,8 @@ export class SvgEditorModal extends Modal {
 
     onOpen(): void {
         this.modalEl.addClass("svge-modal");
+        this.updateCompact();
+        this.compactQuery.addEventListener("change", this.updateCompact);
         const { contentEl } = this;
         contentEl.addClass("svge-content");
 
@@ -165,6 +177,10 @@ export class SvgEditorModal extends Modal {
         });
 
         const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
+        this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
+        setIcon(this.deleteSelBtn, "delete");
+        this.deleteSelBtn.disabled = true;
+        this.deleteSelBtn.addEventListener("click", () => this.core.deleteSelection());
         this.undoBtn = histGroup.createEl("button", { attr: { "aria-label": "Undo (Ctrl+Z)" } });
         setIcon(this.undoBtn, "undo-2");
         this.undoBtn.addEventListener("click", () => this.core.undo());
@@ -269,6 +285,7 @@ export class SvgEditorModal extends Modal {
 
     /** Reflect the current selection into the style controls. */
     private reflectSelection(sel: SVGGraphicsElement[]): void {
+        this.deleteSelBtn.disabled = sel.length === 0;
         if (sel.length === 0) {
             this.selectionNoteEl.setText("");
             return;
@@ -337,6 +354,7 @@ export class SvgEditorModal extends Modal {
     }
 
     onClose(): void {
+        this.compactQuery.removeEventListener("change", this.updateCompact);
         this.core?.destroy();
         this.contentEl.empty();
     }

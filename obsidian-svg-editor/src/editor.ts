@@ -136,6 +136,8 @@ export class SvgEditorCore {
 
     private boundPointerMove = (e: PointerEvent) => this.handlePointerMove(e);
     private boundPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
+    /** Pointer that started the current gesture; other touches are ignored. */
+    private activePointerId = -1;
 
     constructor(private containerEl: HTMLElement) {
         this.svgEl = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
@@ -152,6 +154,7 @@ export class SvgEditorCore {
     destroy(): void {
         window.removeEventListener("pointermove", this.boundPointerMove);
         window.removeEventListener("pointerup", this.boundPointerUp);
+        window.removeEventListener("pointercancel", this.boundPointerUp);
         this.svgEl.remove();
     }
 
@@ -455,7 +458,8 @@ export class SvgEditorCore {
     }
 
     private handlePointerDown(e: PointerEvent): void {
-        if (e.button !== 0) return;
+        // Primary button/finger only; a second touch must not start a new gesture.
+        if (e.button !== 0 || !e.isPrimary || this.draw) return;
         const p = this.eventPoint(e);
 
         if (this.tool === "delete") {
@@ -537,8 +541,10 @@ export class SvgEditorCore {
         }
 
         if (this.draw) {
+            this.activePointerId = e.pointerId;
             window.addEventListener("pointermove", this.boundPointerMove);
             window.addEventListener("pointerup", this.boundPointerUp);
+            window.addEventListener("pointercancel", this.boundPointerUp);
             e.preventDefault();
         }
     }
@@ -555,7 +561,7 @@ export class SvgEditorCore {
     }
 
     private handlePointerMove(e: PointerEvent): void {
-        if (!this.draw) return;
+        if (!this.draw || e.pointerId !== this.activePointerId) return;
         const p = this.eventPoint(e);
         const d = this.draw;
 
@@ -610,8 +616,11 @@ export class SvgEditorCore {
     }
 
     private handlePointerUp(e: PointerEvent): void {
+        if (e.pointerId !== this.activePointerId) return;
+        this.activePointerId = -1;
         window.removeEventListener("pointermove", this.boundPointerMove);
         window.removeEventListener("pointerup", this.boundPointerUp);
+        window.removeEventListener("pointercancel", this.boundPointerUp);
         const d = this.draw;
         this.draw = null;
         if (!d) return;

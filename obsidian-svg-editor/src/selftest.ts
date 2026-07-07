@@ -241,6 +241,80 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
             comp2.unload();
             host2.remove();
         }
+
+        // ---- 15. Mobile: compact layout, touch drawing, delete button, visible edit button ----
+        // app.emulateMobile() reloads the whole app window, so the test never
+        // toggles it. On a real/emulated mobile app the checks run against the
+        // real UI; on desktop we simulate the one signal the plugin's mobile
+        // behavior keys off (the is-mobile body class).
+        const wasMobile = document.body.classList.contains("is-mobile");
+        {
+            let mModal: SvgEditorModal | null = null;
+            try {
+                if (!wasMobile) document.body.classList.add("is-mobile");
+                check(
+                    "mobile signal active",
+                    document.body.classList.contains("is-mobile"),
+                    wasMobile ? "real mobile UI" : "simulated via body class"
+                );
+
+                mModal = new SvgEditorModal(plugin.app, "", () => {});
+                mModal.open();
+                await sleep(150);
+                const mEl = mModal.modalEl;
+                check("compact layout class applied on mobile", mEl.classList.contains("svge-compact"), mEl.className);
+                const mw = mEl.getBoundingClientRect().width;
+                check("modal fills screen width on mobile", mw >= window.innerWidth * 0.95, `${Math.round(mw)} vs ${window.innerWidth}`);
+                const tb = mEl.querySelector(".svge-toolbar")!.getBoundingClientRect();
+                check("toolbar is horizontal on mobile", tb.width > tb.height, `${Math.round(tb.width)}×${Math.round(tb.height)}`);
+
+                // Draw a rect with touch pointer events.
+                const mCore = mModal.core;
+                const mSvg = mCore.svgEl;
+                const mr = mSvg.getBoundingClientRect();
+                const touch = { pointerType: "touch" } as PointerEventInit;
+                mModal.setTool("rect");
+                firePointer(mSvg, "pointerdown", mr.left + mr.width * 0.2, mr.top + mr.height * 0.2, touch);
+                firePointer(window, "pointermove", mr.left + mr.width * 0.5, mr.top + mr.height * 0.5, touch);
+                firePointer(window, "pointerup", mr.left + mr.width * 0.5, mr.top + mr.height * 0.5, touch);
+                check("touch pointer events draw a shape", mCore.contentChildren().length === 1, `count=${mCore.contentChildren().length}`);
+
+                // Delete the shape via the on-screen button (no keyboard on mobile).
+                mModal.setTool("select");
+                mCore.selectAll();
+                const delBtn = mEl.querySelector<HTMLButtonElement>('button[aria-label^="Delete selection"]');
+                check("delete-selection button enables with selection", !!delBtn && !delBtn.disabled, delBtn ? `disabled=${delBtn.disabled}` : "button missing");
+                delBtn?.click();
+                check("delete-selection button removes shapes", mCore.contentChildren().length === 0, `count=${mCore.contentChildren().length}`);
+                mModal.close();
+                mModal = null;
+
+                // Edit button on rendered blocks must be visible without hover.
+                const host3 = document.body.createDiv();
+                host3.style.position = "fixed";
+                host3.style.left = "-9999px";
+                const comp3 = new Component();
+                try {
+                    await MarkdownRenderer.render(
+                        plugin.app,
+                        "```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><rect width=\"5\" height=\"5\"/></svg>\n```",
+                        host3,
+                        TARGET_PATH,
+                        comp3
+                    );
+                    await sleep(100);
+                    const editBtn = host3.querySelector(".svge-edit-btn");
+                    const opacity = editBtn ? getComputedStyle(editBtn).opacity : "no button";
+                    check("edit button visible without hover on mobile", opacity === "1", `opacity=${opacity}`);
+                } finally {
+                    comp3.unload();
+                    host3.remove();
+                }
+            } finally {
+                mModal?.close();
+                if (!wasMobile) document.body.classList.remove("is-mobile");
+            }
+        }
     } catch (e) {
         check("self-test crashed", false, e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e));
     } finally {

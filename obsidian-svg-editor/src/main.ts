@@ -46,6 +46,17 @@ export default class SvgEditorPlugin extends Plugin {
             name: "Run self-test (writes a report note)",
             callback: () => void runSelfTest(this),
         });
+
+        this.addCommand({
+            id: "toggle-mobile-emulation",
+            name: "Toggle mobile emulation (dev — reloads the app)",
+            checkCallback: (checking) => {
+                const anyApp = this.app as unknown as { emulateMobile?: (on: boolean) => void };
+                if (typeof anyApp.emulateMobile !== "function") return false;
+                if (!checking) anyApp.emulateMobile(!document.body.classList.contains("is-mobile"));
+                return true;
+            },
+        });
     }
 
     // ------------------------------------------------------------------

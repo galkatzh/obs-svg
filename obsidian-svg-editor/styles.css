@@ -45,6 +45,17 @@
     opacity: 1;
 }
 
+/* No hover on touch screens: keep the edit button always visible. */
+body.is-mobile .svge-edit-btn {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .svge-edit-btn {
+        opacity: 1;
+    }
+}
+
 /* ==================================================================
    Editor modal
    ================================================================== */
@@ -201,6 +212,10 @@ svg.svge-canvas {
     max-height: 100%;
     touch-action: none;
     cursor: crosshair;
+    /* Long-pressing the canvas on touch devices must not open selection callouts. */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
 }
 
 svg.svge-canvas[data-tool="select"] {
@@ -358,4 +373,62 @@ svg.svge-canvas .svge-marquee {
     color: var(--text-muted);
     border-top: 1px solid var(--background-modifier-border);
     margin-top: var(--size-4-2);
+}
+
+/* ==================================================================
+   Compact layout — mobile devices and narrow windows
+   (`svge-compact` is set by the modal from Platform.isMobile /
+   body.is-mobile / a max-width media query)
+   ================================================================== */
+
+body.is-mobile .modal.svge-modal,
+.modal.svge-modal.svge-compact {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+}
+
+.svge-modal.svge-compact .svge-content {
+    padding: var(--size-2-3);
+}
+
+.svge-modal.svge-compact .svge-title {
+    display: none;
+}
+
+/* Toolbar becomes a horizontal, wrappable strip above the canvas. */
+.svge-modal.svge-compact .svge-main {
+    flex-direction: column;
+}
+
+.svge-modal.svge-compact .svge-toolbar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-self: stretch;
+    justify-content: center;
+}
+
+/* Finger-sized targets. */
+.svge-modal.svge-compact .svge-tool {
+    width: 44px;
+    height: 44px;
+}
+
+.svge-modal.svge-compact .svge-hist button {
+    min-width: 40px;
+    min-height: 36px;
+}
+
+.svge-modal.svge-compact .svge-props {
+    gap: var(--size-4-2);
+    justify-content: center;
+}
+
+.svge-modal.svge-compact .svge-props input[type="color"] {
+    width: 34px;
+    height: 34px;
+}
+
+.svge-modal.svge-compact .svge-props input[type="range"] {
+    width: 72px;
 }

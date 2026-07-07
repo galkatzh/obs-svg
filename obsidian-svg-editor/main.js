@@ -110,6 +110,8 @@ var SvgEditorCore = class {
     };
     this.boundPointerMove = (e) => this.handlePointerMove(e);
     this.boundPointerUp = (e) => this.handlePointerUp(e);
+    /** Pointer that started the current gesture; other touches are ignored. */
+    this.activePointerId = -1;
     this.svgEl = document.createElementNS(SVG_NS, "svg");
     this.svgEl.classList.add("svge-canvas");
     this.overlayEl = document.createElementNS(SVG_NS, "g");
@@ -122,6 +124,7 @@ var SvgEditorCore = class {
   destroy() {
     window.removeEventListener("pointermove", this.boundPointerMove);
     window.removeEventListener("pointerup", this.boundPointerUp);
+    window.removeEventListener("pointercancel", this.boundPointerUp);
     this.svgEl.remove();
   }
   // ------------------------------------------------------------------
@@ -383,7 +386,7 @@ var SvgEditorCore = class {
     return this.clientToSvg(e.clientX, e.clientY);
   }
   handlePointerDown(e) {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !e.isPrimary || this.draw) return;
     const p = this.eventPoint(e);
     if (this.tool === "delete") {
       this.draw = { kind: "delete", start: p, deleteMarks: /* @__PURE__ */ new Map() };
@@ -460,8 +463,10 @@ var SvgEditorCore = class {
       this.draw = { kind: this.tool, el, start: p, points: [p] };
     }
     if (this.draw) {
+      this.activePointerId = e.pointerId;
       window.addEventListener("pointermove", this.boundPointerMove);
       window.addEventListener("pointerup", this.boundPointerUp);
+      window.addEventListener("pointercancel", this.boundPointerUp);
       e.preventDefault();
     }
   }
@@ -476,7 +481,7 @@ var SvgEditorCore = class {
     shape.setAttribute("opacity", String(faded));
   }
   handlePointerMove(e) {
-    if (!this.draw) return;
+    if (!this.draw || e.pointerId !== this.activePointerId) return;
     const p = this.eventPoint(e);
     const d = this.draw;
     switch (d.kind) {
@@ -527,8 +532,11 @@ var SvgEditorCore = class {
     }
   }
   handlePointerUp(e) {
+    if (e.pointerId !== this.activePointerId) return;
+    this.activePointerId = -1;
     window.removeEventListener("pointermove", this.boundPointerMove);
     window.removeEventListener("pointerup", this.boundPointerUp);
+    window.removeEventListener("pointercancel", this.boundPointerUp);
     const d = this.draw;
     this.draw = null;
     if (!d) return;
@@ -624,9 +632,19 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     this.mode = "visual";
     this.tabButtons = {};
     this.toolButtons = {};
+    /** Compact layout: phones/tablets, or a narrow desktop window. */
+    this.compactQuery = window.matchMedia("(max-width: 640px)");
+    this.updateCompact = () => {
+      this.modalEl.toggleClass(
+        "svge-compact",
+        import_obsidian.Platform.isMobile || document.body.classList.contains("is-mobile") || this.compactQuery.matches
+      );
+    };
   }
   onOpen() {
     this.modalEl.addClass("svge-modal");
+    this.updateCompact();
+    this.compactQuery.addEventListener("change", this.updateCompact);
     const { contentEl } = this;
     contentEl.addClass("svge-content");
     const header = contentEl.createDiv({ cls: "svge-header" });
@@ -726,6 +744,10 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.core.setStyle({ opacity: parseFloat(this.opacityInput.value) / 100 });
     });
     const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
+    this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
+    (0, import_obsidian.setIcon)(this.deleteSelBtn, "delete");
+    this.deleteSelBtn.disabled = true;
+    this.deleteSelBtn.addEventListener("click", () => this.core.deleteSelection());
     this.undoBtn = histGroup.createEl("button", { attr: { "aria-label": "Undo (Ctrl+Z)" } });
     (0, import_obsidian.setIcon)(this.undoBtn, "undo-2");
     this.undoBtn.addEventListener("click", () => this.core.undo());
@@ -818,6 +840,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
   }
   /** Reflect the current selection into the style controls. */
   reflectSelection(sel) {
+    this.deleteSelBtn.disabled = sel.length === 0;
     if (sel.length === 0) {
       this.selectionNoteEl.setText("");
       return;
@@ -881,6 +904,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     }
   }
   onClose() {
+    this.compactQuery.removeEventListener("change", this.updateCompact);
     this.core?.destroy();
     this.contentEl.empty();
   }
@@ -1075,6 +1099,68 @@ async function runSelfTest(plugin) {
       comp2.unload();
       host2.remove();
     }
+    const wasMobile = document.body.classList.contains("is-mobile");
+    {
+      let mModal = null;
+      try {
+        if (!wasMobile) document.body.classList.add("is-mobile");
+        check(
+          "mobile signal active",
+          document.body.classList.contains("is-mobile"),
+          wasMobile ? "real mobile UI" : "simulated via body class"
+        );
+        mModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        mModal.open();
+        await sleep(150);
+        const mEl = mModal.modalEl;
+        check("compact layout class applied on mobile", mEl.classList.contains("svge-compact"), mEl.className);
+        const mw = mEl.getBoundingClientRect().width;
+        check("modal fills screen width on mobile", mw >= window.innerWidth * 0.95, `${Math.round(mw)} vs ${window.innerWidth}`);
+        const tb = mEl.querySelector(".svge-toolbar").getBoundingClientRect();
+        check("toolbar is horizontal on mobile", tb.width > tb.height, `${Math.round(tb.width)}\xD7${Math.round(tb.height)}`);
+        const mCore = mModal.core;
+        const mSvg = mCore.svgEl;
+        const mr = mSvg.getBoundingClientRect();
+        const touch = { pointerType: "touch" };
+        mModal.setTool("rect");
+        firePointer(mSvg, "pointerdown", mr.left + mr.width * 0.2, mr.top + mr.height * 0.2, touch);
+        firePointer(window, "pointermove", mr.left + mr.width * 0.5, mr.top + mr.height * 0.5, touch);
+        firePointer(window, "pointerup", mr.left + mr.width * 0.5, mr.top + mr.height * 0.5, touch);
+        check("touch pointer events draw a shape", mCore.contentChildren().length === 1, `count=${mCore.contentChildren().length}`);
+        mModal.setTool("select");
+        mCore.selectAll();
+        const delBtn = mEl.querySelector('button[aria-label^="Delete selection"]');
+        check("delete-selection button enables with selection", !!delBtn && !delBtn.disabled, delBtn ? `disabled=${delBtn.disabled}` : "button missing");
+        delBtn?.click();
+        check("delete-selection button removes shapes", mCore.contentChildren().length === 0, `count=${mCore.contentChildren().length}`);
+        mModal.close();
+        mModal = null;
+        const host3 = document.body.createDiv();
+        host3.style.position = "fixed";
+        host3.style.left = "-9999px";
+        const comp3 = new import_obsidian2.Component();
+        try {
+          await import_obsidian2.MarkdownRenderer.render(
+            plugin.app,
+            '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="5" height="5"/></svg>\n```',
+            host3,
+            TARGET_PATH,
+            comp3
+          );
+          await sleep(100);
+          const editBtn = host3.querySelector(".svge-edit-btn");
+          const opacity = editBtn ? getComputedStyle(editBtn).opacity : "no button";
+          check("edit button visible without hover on mobile", opacity === "1", `opacity=${opacity}`);
+        } finally {
+          comp3.unload();
+          host3.remove();
+        }
+      } finally {
+        mModal?.close();
+        if (!wasMobile) document.body.classList.remove("is-mobile");
+      }
+    }
   } catch (e) {
     check("self-test crashed", false, e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e));
@@ -1132,6 +1218,16 @@ ${newSource}
       id: "self-test",
       name: "Run self-test (writes a report note)",
       callback: () => void runSelfTest(this)
+    });
+    this.addCommand({
+      id: "toggle-mobile-emulation",
+      name: "Toggle mobile emulation (dev \u2014 reloads the app)",
+      checkCallback: (checking) => {
+        const anyApp = this.app;
+        if (typeof anyApp.emulateMobile !== "function") return false;
+        if (!checking) anyApp.emulateMobile(!document.body.classList.contains("is-mobile"));
+        return true;
+      }
     });
   }
   // ------------------------------------------------------------------
