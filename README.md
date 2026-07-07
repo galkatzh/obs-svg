@@ -37,6 +37,18 @@ cp manifest.json main.js styles.css "<vault>/.obsidian/plugins/svg-editor/"
 
 Then enable **SVG Editor** in *Settings → Community plugins* (or `obsidian plugin:enable id=svg-editor` with the obsidian CLI).
 
+## Releases
+
+Versioned releases are automated: pushing a tag that matches `manifest.json`'s
+version builds the plugin in CI and publishes a GitHub release with
+`manifest.json`, `main.js` and `styles.css` attached (what BRAT and the
+community directory consume). To cut a release:
+
+```bash
+npm version patch        # or minor/major — also syncs manifest.json + versions.json
+git push && git push --tags
+```
+
 ## Development / testing with the obsidian CLI
 
 ```bash
