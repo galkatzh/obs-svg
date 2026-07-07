@@ -1,6 +1,6 @@
 {
   "name": "obsidian-svg-editor",
-  "version": "0.4.2",
+  "version": "0.4.4",
   "description": "Visual inline SVG editor for Obsidian svg code blocks, with a code mode",
   "main": "main.js",
   "scripts": {
