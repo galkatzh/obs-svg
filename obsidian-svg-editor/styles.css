@@ -41,8 +41,15 @@
 }
 
 .svge-block:hover .svge-edit-btn,
+.svge-file-embed:hover .svge-edit-btn,
 .svge-edit-btn:focus-visible {
     opacity: 1;
+}
+
+/* ![[file.svg]] embeds: anchor the edit button to the rendered image. */
+.internal-embed.svge-file-embed {
+    position: relative;
+    display: inline-block;
 }
 
 /* No hover on touch screens: keep the edit button always visible. */

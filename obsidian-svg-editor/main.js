@@ -1161,6 +1161,68 @@ async function runSelfTest(plugin) {
         if (!wasMobile) document.body.classList.remove("is-mobile");
       }
     }
+    const FILE_PATH = "SVGE-SelfTest-File.svg";
+    const fileBody = '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><circle cx="30" cy="30" r="20" stroke="#000000" fill="none"/></svg>';
+    const existingSvg = plugin.app.vault.getAbstractFileByPath(FILE_PATH);
+    if (existingSvg instanceof import_obsidian2.TFile) {
+      await plugin.app.vault.modify(existingSvg, fileBody);
+    } else {
+      await plugin.app.vault.create(FILE_PATH, fileBody);
+    }
+    const svgFile = plugin.app.vault.getAbstractFileByPath(FILE_PATH);
+    check("svg file exists in vault", svgFile instanceof import_obsidian2.TFile, FILE_PATH);
+    if (svgFile instanceof import_obsidian2.TFile) {
+      let fModal = null;
+      try {
+        fModal = await plugin.editSvgFile(svgFile);
+        await sleep(150);
+        const kids = fModal.core.contentChildren();
+        check("svg file loads into editor", kids.length === 1 && kids[0].tagName === "circle", kids.map((k) => k.tagName).join(","));
+        fModal.setMode("code");
+        fModal.codeArea.value = fModal.codeArea.value.replace(
+          "</svg>",
+          '  <rect x="2" y="2" width="10" height="10" fill="#0000ff"/>\n</svg>'
+        );
+        await fModal.save();
+        fModal = null;
+        await sleep(100);
+        const fileAfter = await plugin.app.vault.adapter.read(FILE_PATH);
+        check(
+          "svg file save writes back to the file",
+          fileAfter.includes("<rect") && fileAfter.includes("<circle"),
+          fileAfter.split("\n")[0] ?? ""
+        );
+      } finally {
+        fModal?.close();
+      }
+      const host4 = document.body.createDiv();
+      host4.style.position = "fixed";
+      host4.style.left = "-9999px";
+      const comp4 = new import_obsidian2.Component();
+      comp4.load();
+      try {
+        await import_obsidian2.MarkdownRenderer.render(plugin.app, `![[${FILE_PATH}]]`, host4, TARGET_PATH, comp4);
+        await sleep(150);
+        const embedEl = host4.querySelector(".internal-embed");
+        check(
+          "svg embed gets edit button",
+          !!embedEl?.querySelector(".svge-edit-btn"),
+          embedEl ? embedEl.className : "no .internal-embed rendered"
+        );
+        if (embedEl) {
+          embedEl.querySelector(".svge-edit-btn")?.remove();
+          await sleep(80);
+          check(
+            "embed edit button survives content replacement",
+            !!embedEl.querySelector(".svge-edit-btn"),
+            ""
+          );
+        }
+      } finally {
+        comp4.unload();
+        host4.remove();
+      }
+    }
   } catch (e) {
     check("self-test crashed", false, e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e));
@@ -1194,6 +1256,30 @@ var SvgEditorPlugin = class extends import_obsidian3.Plugin {
     this.registerMarkdownCodeBlockProcessor(
       "svg",
       (source, el, ctx) => this.renderSvgBlock(source, el, ctx)
+    );
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      for (const embed of Array.from(el.querySelectorAll(".internal-embed"))) {
+        const src = embed.getAttribute("src");
+        if (!src || !isSvgLink(src)) continue;
+        ctx.addChild(new SvgEmbedDecorator(this, embed, src, ctx.sourcePath));
+      }
+    });
+    this.registerDomEvent(document, "dblclick", (evt) => {
+      const embed = evt.target?.closest?.(".internal-embed");
+      if (!(embed instanceof HTMLElement)) return;
+      const src = embed.getAttribute("src");
+      if (!src || !isSvgLink(src)) return;
+      evt.preventDefault();
+      void this.editSvgFileBySrc(src, this.app.workspace.getActiveFile()?.path ?? "");
+    });
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (file instanceof import_obsidian3.TFile && file.extension.toLowerCase() === "svg") {
+          menu.addItem(
+            (item) => item.setTitle("Edit in SVG Editor").setIcon("pencil").onClick(() => void this.editSvgFile(file))
+          );
+        }
+      })
     );
     this.addCommand({
       id: "insert-svg-drawing",
@@ -1310,6 +1396,37 @@ ${newSource}
     return ok;
   }
   // ------------------------------------------------------------------
+  // Embedded .svg file editing
+  // ------------------------------------------------------------------
+  /** Resolve an embed/link target like "drawing.svg#hash" and open it. */
+  async editSvgFileBySrc(src, sourcePath) {
+    const linkpath = src.split("#")[0].trim();
+    const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath);
+    if (!file) {
+      new import_obsidian3.Notice(`SVG Editor: cannot resolve "${linkpath}".`);
+      return null;
+    }
+    return this.editSvgFile(file);
+  }
+  /** Open the editor on a vault .svg file; Save writes the file back. */
+  async editSvgFile(file) {
+    const source = await this.app.vault.read(file);
+    const modal = new SvgEditorModal(this.app, source, async (newSource) => {
+      await this.app.vault.process(file, () => newSource);
+      this.refreshEmbedsOf(file);
+    });
+    modal.open();
+    return modal;
+  }
+  /** Re-point every rendered <img> of this file at its new content. */
+  refreshEmbedsOf(file) {
+    const fresh = this.app.vault.getResourcePath(file);
+    const base = fresh.split("?")[0];
+    for (const img of Array.from(document.querySelectorAll("img"))) {
+      if (img.src.split("?")[0] === base) img.src = fresh;
+    }
+  }
+  // ------------------------------------------------------------------
   // Source-mode editing
   // ------------------------------------------------------------------
   editBlockAtCursor(editor) {
@@ -1348,5 +1465,41 @@ ${newSource}
       editor.replaceRange(`${newSource}
 `, { line: open + 1, ch: 0 }, { line: close, ch: 0 });
     }).open();
+  }
+};
+function isSvgLink(src) {
+  return /\.svg$/i.test(src.split("#")[0].trim());
+}
+var SvgEmbedDecorator = class extends import_obsidian3.MarkdownRenderChild {
+  constructor(plugin, containerEl, src, sourcePath) {
+    super(containerEl);
+    this.plugin = plugin;
+    this.src = src;
+    this.sourcePath = sourcePath;
+    this.observer = null;
+  }
+  onload() {
+    this.decorate();
+    this.observer = new MutationObserver(() => this.decorate());
+    this.observer.observe(this.containerEl, { childList: true });
+  }
+  onunload() {
+    this.observer?.disconnect();
+    this.observer = null;
+  }
+  decorate() {
+    const el = this.containerEl;
+    if (el.querySelector(":scope > .svge-edit-btn")) return;
+    el.addClass("svge-file-embed");
+    const btn = el.createEl("button", {
+      cls: "svge-edit-btn",
+      attr: { "aria-label": "Edit SVG file" }
+    });
+    (0, import_obsidian3.setIcon)(btn, "pencil");
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.plugin.editSvgFileBySrc(this.src, this.sourcePath);
+    });
   }
 };

@@ -6,6 +6,7 @@ An Obsidian plugin that turns ```` ```svg ```` code blocks into inline drawings 
 
 - Renders ```` ```svg ```` fenced code blocks as inline SVG in reading and live-preview modes (sanitized: scripts, event handlers and `javascript:` URLs are stripped).
 - Hover a rendered block and click the pencil button (or double-click) to open the editor; **Save** writes the SVG back into the note.
+- **Embedded `.svg` files** — `![[drawing.svg]]` embeds get the same pencil button in reading mode; double-clicking an embedded svg image works in any mode, and `.svg` files get an **Edit in SVG Editor** entry in the file explorer's context menu. Save writes the `.svg` file back and refreshes every visible embed of it.
 - **Visual mode**
   - Tools: select & move (`V`), line (`L`), circle (`C`), rectangle (`R`), freehand scribble (`P`), delete (`X` — click a shape, or press and sweep over several; they fade as they're marked and are removed on release)
   - Click / shift-click / marquee (rubber-band) selection; drag to move; `Delete` removes the selection; `Ctrl/Cmd+A` selects all
@@ -45,7 +46,7 @@ obsidian vault=<name> command id=svg-editor:self-test
 obsidian vault=<name> read path=SVGE-SelfTest-Report.md
 ```
 
-The self-test opens the real modal, draws each shape with synthetic pointer events, exercises select/move, sweep-to-delete, styling, undo/redo, code-mode round-trips, invalid-code rejection, canvas resize, save, write-back into a real note (including the stale-line fallback search), the markdown renderer, sanitization, and the mobile behavior (compact layout, touch drawing, delete button, visible edit button) — and reports PASS/FAIL per check. The mobile checks run against the real mobile UI when the app is mobile/emulated, and against a simulated `is-mobile` body class on desktop; the test itself never toggles emulation because `app.emulateMobile()` reloads the app window.
+The self-test opens the real modal, draws each shape with synthetic pointer events, exercises select/move, sweep-to-delete, styling, undo/redo, code-mode round-trips, invalid-code rejection, canvas resize, save, write-back into a real note (including the stale-line fallback search), the markdown renderer, sanitization, the mobile behavior (compact layout, touch drawing, delete button, visible edit button), and `.svg` file editing (load, save back to the file, embed decoration) — and reports PASS/FAIL per check. The mobile checks run against the real mobile UI when the app is mobile/emulated, and against a simulated `is-mobile` body class on desktop; the test itself never toggles emulation because `app.emulateMobile()` reloads the app window.
 
 ## Layout
 

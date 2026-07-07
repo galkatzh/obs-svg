@@ -1,7 +1,7 @@
 {
     "id": "svg-editor",
     "name": "SVG Editor",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "minAppVersion": "1.4.0",
     "description": "Edit inline SVG code blocks visually — draw lines, circles, rectangles and freehand scribbles — or switch to code mode to edit the SVG source directly.",
     "author": "Gal Katzhendler",

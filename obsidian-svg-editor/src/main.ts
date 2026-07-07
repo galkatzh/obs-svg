@@ -8,6 +8,7 @@
 import {
     Editor,
     MarkdownPostProcessorContext,
+    MarkdownRenderChild,
     Notice,
     Plugin,
     TFile,
@@ -21,6 +22,40 @@ export default class SvgEditorPlugin extends Plugin {
     async onload(): Promise<void> {
         this.registerMarkdownCodeBlockProcessor("svg", (source, el, ctx) =>
             this.renderSvgBlock(source, el, ctx)
+        );
+
+        // Embedded .svg files (![[drawing.svg]]): edit button on rendered embeds.
+        this.registerMarkdownPostProcessor((el, ctx) => {
+            for (const embed of Array.from(el.querySelectorAll<HTMLElement>(".internal-embed"))) {
+                const src = embed.getAttribute("src");
+                if (!src || !isSvgLink(src)) continue;
+                ctx.addChild(new SvgEmbedDecorator(this, embed, src, ctx.sourcePath));
+            }
+        });
+
+        // Live preview renders embeds outside the post-processor pipeline:
+        // double-click an embedded svg image to edit it, in any mode.
+        this.registerDomEvent(document, "dblclick", (evt) => {
+            const embed = (evt.target as HTMLElement | null)?.closest?.(".internal-embed");
+            if (!(embed instanceof HTMLElement)) return;
+            const src = embed.getAttribute("src");
+            if (!src || !isSvgLink(src)) return;
+            evt.preventDefault();
+            void this.editSvgFileBySrc(src, this.app.workspace.getActiveFile()?.path ?? "");
+        });
+
+        // File explorer and link context menus.
+        this.registerEvent(
+            this.app.workspace.on("file-menu", (menu, file) => {
+                if (file instanceof TFile && file.extension.toLowerCase() === "svg") {
+                    menu.addItem((item) =>
+                        item
+                            .setTitle("Edit in SVG Editor")
+                            .setIcon("pencil")
+                            .onClick(() => void this.editSvgFile(file))
+                    );
+                }
+            })
         );
 
         this.addCommand({
@@ -159,6 +194,41 @@ export default class SvgEditorPlugin extends Plugin {
     }
 
     // ------------------------------------------------------------------
+    // Embedded .svg file editing
+    // ------------------------------------------------------------------
+
+    /** Resolve an embed/link target like "drawing.svg#hash" and open it. */
+    async editSvgFileBySrc(src: string, sourcePath: string): Promise<SvgEditorModal | null> {
+        const linkpath = src.split("#")[0].trim();
+        const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath);
+        if (!file) {
+            new Notice(`SVG Editor: cannot resolve "${linkpath}".`);
+            return null;
+        }
+        return this.editSvgFile(file);
+    }
+
+    /** Open the editor on a vault .svg file; Save writes the file back. */
+    async editSvgFile(file: TFile): Promise<SvgEditorModal> {
+        const source = await this.app.vault.read(file);
+        const modal = new SvgEditorModal(this.app, source, async (newSource) => {
+            await this.app.vault.process(file, () => newSource);
+            this.refreshEmbedsOf(file);
+        });
+        modal.open();
+        return modal;
+    }
+
+    /** Re-point every rendered <img> of this file at its new content. */
+    private refreshEmbedsOf(file: TFile): void {
+        const fresh = this.app.vault.getResourcePath(file);
+        const base = fresh.split("?")[0];
+        for (const img of Array.from(document.querySelectorAll<HTMLImageElement>("img"))) {
+            if (img.src.split("?")[0] === base) img.src = fresh;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Source-mode editing
     // ------------------------------------------------------------------
 
@@ -202,5 +272,54 @@ export default class SvgEditorPlugin extends Plugin {
         new SvgEditorModal(this.app, source, (newSource) => {
             editor.replaceRange(`${newSource}\n`, { line: open + 1, ch: 0 }, { line: close, ch: 0 });
         }).open();
+    }
+}
+
+function isSvgLink(src: string): boolean {
+    return /\.svg$/i.test(src.split("#")[0].trim());
+}
+
+/**
+ * Keeps an edit button on a rendered ![[file.svg]] embed. Obsidian replaces
+ * the embed's children when the image loads, so the button is re-added
+ * whenever the embed's content changes.
+ */
+class SvgEmbedDecorator extends MarkdownRenderChild {
+    private observer: MutationObserver | null = null;
+
+    constructor(
+        private plugin: SvgEditorPlugin,
+        containerEl: HTMLElement,
+        private src: string,
+        private sourcePath: string
+    ) {
+        super(containerEl);
+    }
+
+    onload(): void {
+        this.decorate();
+        this.observer = new MutationObserver(() => this.decorate());
+        this.observer.observe(this.containerEl, { childList: true });
+    }
+
+    onunload(): void {
+        this.observer?.disconnect();
+        this.observer = null;
+    }
+
+    private decorate(): void {
+        const el = this.containerEl;
+        if (el.querySelector(":scope > .svge-edit-btn")) return;
+        el.addClass("svge-file-embed");
+        const btn = el.createEl("button", {
+            cls: "svge-edit-btn",
+            attr: { "aria-label": "Edit SVG file" },
+        });
+        setIcon(btn, "pencil");
+        btn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void this.plugin.editSvgFileBySrc(this.src, this.sourcePath);
+        });
     }
 }

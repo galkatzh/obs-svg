@@ -5,7 +5,7 @@
  * markdown renderer, then writes a PASS/FAIL report note.
  */
 
-import { Component, MarkdownRenderer, Notice } from "obsidian";
+import { Component, MarkdownRenderer, Notice, TFile } from "obsidian";
 import type SvgEditorPlugin from "./main";
 import { SvgEditorModal } from "./modal";
 
@@ -313,6 +313,75 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
             } finally {
                 mModal?.close();
                 if (!wasMobile) document.body.classList.remove("is-mobile");
+            }
+        }
+
+        // ---- 16. Embedded .svg file editing ----
+        const FILE_PATH = "SVGE-SelfTest-File.svg";
+        const fileBody =
+            '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><circle cx="30" cy="30" r="20" stroke="#000000" fill="none"/></svg>';
+        const existingSvg = plugin.app.vault.getAbstractFileByPath(FILE_PATH);
+        if (existingSvg instanceof TFile) {
+            await plugin.app.vault.modify(existingSvg, fileBody);
+        } else {
+            await plugin.app.vault.create(FILE_PATH, fileBody);
+        }
+        const svgFile = plugin.app.vault.getAbstractFileByPath(FILE_PATH);
+        check("svg file exists in vault", svgFile instanceof TFile, FILE_PATH);
+
+        if (svgFile instanceof TFile) {
+            let fModal: SvgEditorModal | null = null;
+            try {
+                fModal = await plugin.editSvgFile(svgFile);
+                await sleep(150);
+                const kids = fModal.core.contentChildren();
+                check("svg file loads into editor", kids.length === 1 && kids[0].tagName === "circle", kids.map((k) => k.tagName).join(","));
+                fModal.setMode("code");
+                fModal.codeArea.value = fModal.codeArea.value.replace(
+                    "</svg>",
+                    '  <rect x="2" y="2" width="10" height="10" fill="#0000ff"/>\n</svg>'
+                );
+                await fModal.save();
+                fModal = null;
+                await sleep(100);
+                const fileAfter = await plugin.app.vault.adapter.read(FILE_PATH);
+                check(
+                    "svg file save writes back to the file",
+                    fileAfter.includes("<rect") && fileAfter.includes("<circle"),
+                    fileAfter.split("\n")[0] ?? ""
+                );
+            } finally {
+                fModal?.close();
+            }
+
+            // Rendered ![[file.svg]] embeds get an edit button that survives
+            // Obsidian re-rendering the embed's content.
+            const host4 = document.body.createDiv();
+            host4.style.position = "fixed";
+            host4.style.left = "-9999px";
+            const comp4 = new Component();
+            comp4.load();
+            try {
+                await MarkdownRenderer.render(plugin.app, `![[${FILE_PATH}]]`, host4, TARGET_PATH, comp4);
+                await sleep(150);
+                const embedEl = host4.querySelector(".internal-embed");
+                check(
+                    "svg embed gets edit button",
+                    !!embedEl?.querySelector(".svge-edit-btn"),
+                    embedEl ? embedEl.className : "no .internal-embed rendered"
+                );
+                if (embedEl) {
+                    embedEl.querySelector(".svge-edit-btn")?.remove();
+                    await sleep(80);
+                    check(
+                        "embed edit button survives content replacement",
+                        !!embedEl.querySelector(".svge-edit-btn"),
+                        ""
+                    );
+                }
+            } finally {
+                comp4.unload();
+                host4.remove();
             }
         }
     } catch (e) {
