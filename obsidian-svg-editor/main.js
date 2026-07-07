@@ -80,6 +80,8 @@ function prettyPrintXml(xml) {
   }
   return out.join("\n");
 }
+var DELETE_FADE_FACTOR = 0.6;
+var DELETE_MIN_OPACITY = 0.15;
 var SvgEditorCore = class {
   constructor(containerEl) {
     this.containerEl = containerEl;
@@ -253,7 +255,7 @@ var SvgEditorCore = class {
       circle: "Circle \u2014 drag outward from the center",
       rect: "Rectangle \u2014 drag corner to corner",
       scribble: "Scribble \u2014 draw freehand",
-      delete: "Delete \u2014 click a shape to remove it"
+      delete: "Delete \u2014 click or sweep over shapes to remove them"
     };
     this.onStatus(hints[tool]);
   }
@@ -384,15 +386,10 @@ var SvgEditorCore = class {
     if (e.button !== 0) return;
     const p = this.eventPoint(e);
     if (this.tool === "delete") {
-      const shape = this.topLevelShapeFor(e.target);
-      if (shape) {
-        shape.remove();
-        this.commit();
-        this.onStatus("Shape deleted");
-      }
-      return;
-    }
-    if (this.tool === "select") {
+      this.draw = { kind: "delete", start: p, deleteMarks: /* @__PURE__ */ new Map() };
+      this.markForDeletion(this.draw, e.target);
+      this.onStatus("Sweep over shapes to delete, release to confirm");
+    } else if (this.tool === "select") {
       const shape = this.topLevelShapeFor(e.target);
       if (shape) {
         if (e.shiftKey) {
@@ -468,11 +465,25 @@ var SvgEditorCore = class {
       e.preventDefault();
     }
   }
+  /** Queue the shape under the pointer for deletion and fade it as feedback. */
+  markForDeletion(d, target) {
+    const shape = this.topLevelShapeFor(target);
+    if (!shape || !d.deleteMarks || d.deleteMarks.has(shape)) return;
+    const original = shape.getAttribute("opacity");
+    d.deleteMarks.set(shape, original);
+    const base = parseFloat(original ?? "1");
+    const faded = Math.max(DELETE_MIN_OPACITY, (Number.isFinite(base) ? base : 1) * DELETE_FADE_FACTOR);
+    shape.setAttribute("opacity", String(faded));
+  }
   handlePointerMove(e) {
     if (!this.draw) return;
     const p = this.eventPoint(e);
     const d = this.draw;
     switch (d.kind) {
+      case "delete": {
+        this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+        break;
+      }
       case "select": {
         if (d.marqueeEl) {
           d.marqueeEl.setAttribute("x", String(Math.min(d.start.x, p.x)));
@@ -521,6 +532,19 @@ var SvgEditorCore = class {
     const d = this.draw;
     this.draw = null;
     if (!d) return;
+    if (d.kind === "delete") {
+      this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+      const marks = d.deleteMarks;
+      if (marks.size > 0) {
+        for (const el2 of marks.keys()) el2.remove();
+        this.selection = this.selection.filter((s) => !marks.has(s));
+        this.refreshSelectionBoxes();
+        this.onSelectionChange(this.selection);
+        this.commit();
+      }
+      this.onStatus(marks.size > 0 ? `Deleted ${marks.size} shape${marks.size === 1 ? "" : "s"}` : "Nothing deleted");
+      return;
+    }
     if (d.kind === "select") {
       if (d.marqueeEl) {
         const mx = parseFloat(d.marqueeEl.getAttribute("x") ?? "0");
@@ -945,6 +969,25 @@ async function runSelfTest(plugin) {
     check("delete selection empties canvas", core.contentChildren().length === 0, `${countBefore} \u2192 0`);
     core.undo();
     check("undo restores deleted shapes", core.contentChildren().length === countBefore, `count=${core.contentChildren().length}`);
+    modal.setTool("rect");
+    drag(pt(0.05, 0.45), pt(0.15, 0.55));
+    drag(pt(0.25, 0.45), pt(0.35, 0.55));
+    const preSweep = core.contentChildren().length;
+    const [r1, r2] = core.contentChildren().slice(-2);
+    const b1 = r1.getBoundingClientRect();
+    const b2 = r2.getBoundingClientRect();
+    modal.setTool("delete");
+    firePointer(svg, "pointerdown", b1.left - 15, b1.top + b1.height / 2);
+    firePointer(window, "pointermove", b1.left + 1, b1.top + b1.height / 2);
+    firePointer(window, "pointermove", b2.left + 1, b2.top + b2.height / 2);
+    firePointer(window, "pointerup", b2.right + 15, b2.top + b2.height / 2);
+    check("delete tool sweep removes all swept shapes", core.contentChildren().length === preSweep - 2, `${preSweep} \u2192 ${core.contentChildren().length}`);
+    core.undo();
+    const restored = core.contentChildren();
+    const sweptOpacityClean = restored.slice(-2).every((el) => (el.getAttribute("opacity") ?? "1") === "1" || el.getAttribute("opacity") === null);
+    check("undo restores swept shapes without fade", restored.length === preSweep && sweptOpacityClean, `count=${restored.length}`);
+    core.redo();
+    check("redo re-applies sweep deletion", core.contentChildren().length === countBefore, `count=${core.contentChildren().length}`);
     const toCode = modal.setMode("code");
     check("switch to code mode", toCode && modal.codeArea.value.includes("<svg"), modal.codeArea.value.slice(0, 60));
     modal.codeArea.value = modal.codeArea.value.replace(

@@ -98,7 +98,13 @@ interface DrawState {
     moveTargets?: { el: SVGGraphicsElement; baseTransform: string | null }[];
     moved?: boolean;
     marqueeEl?: SVGRectElement;
+    /** Shapes marked during a delete sweep, with their original opacity attribute. */
+    deleteMarks?: Map<SVGGraphicsElement, string | null>;
 }
+
+// Sweep-to-delete: how much to fade a marked shape, and the floor so it stays visible.
+const DELETE_FADE_FACTOR = 0.6;
+const DELETE_MIN_OPACITY = 0.15;
 
 export class SvgEditorCore {
     svgEl: SVGSVGElement;
@@ -306,7 +312,7 @@ export class SvgEditorCore {
             circle: "Circle — drag outward from the center",
             rect: "Rectangle — drag corner to corner",
             scribble: "Scribble — draw freehand",
-            delete: "Delete — click a shape to remove it",
+            delete: "Delete — click or sweep over shapes to remove them",
         };
         this.onStatus(hints[tool]);
     }
@@ -453,16 +459,12 @@ export class SvgEditorCore {
         const p = this.eventPoint(e);
 
         if (this.tool === "delete") {
-            const shape = this.topLevelShapeFor(e.target);
-            if (shape) {
-                shape.remove();
-                this.commit();
-                this.onStatus("Shape deleted");
-            }
-            return;
-        }
-
-        if (this.tool === "select") {
+            // Press-and-sweep: every shape the pointer passes over is faded and
+            // queued; all queued shapes are removed together on release.
+            this.draw = { kind: "delete", start: p, deleteMarks: new Map() };
+            this.markForDeletion(this.draw, e.target);
+            this.onStatus("Sweep over shapes to delete, release to confirm");
+        } else if (this.tool === "select") {
             const shape = this.topLevelShapeFor(e.target);
             if (shape) {
                 if (e.shiftKey) {
@@ -541,12 +543,29 @@ export class SvgEditorCore {
         }
     }
 
+    /** Queue the shape under the pointer for deletion and fade it as feedback. */
+    private markForDeletion(d: DrawState, target: EventTarget | null): void {
+        const shape = this.topLevelShapeFor(target);
+        if (!shape || !d.deleteMarks || d.deleteMarks.has(shape)) return;
+        const original = shape.getAttribute("opacity");
+        d.deleteMarks.set(shape, original);
+        const base = parseFloat(original ?? "1");
+        const faded = Math.max(DELETE_MIN_OPACITY, (Number.isFinite(base) ? base : 1) * DELETE_FADE_FACTOR);
+        shape.setAttribute("opacity", String(faded));
+    }
+
     private handlePointerMove(e: PointerEvent): void {
         if (!this.draw) return;
         const p = this.eventPoint(e);
         const d = this.draw;
 
         switch (d.kind) {
+            case "delete": {
+                // Moves are captured on window, so resolve the hovered element
+                // from the pointer position rather than the event target.
+                this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+                break;
+            }
             case "select": {
                 if (d.marqueeEl) {
                     d.marqueeEl.setAttribute("x", String(Math.min(d.start.x, p.x)));
@@ -596,6 +615,20 @@ export class SvgEditorCore {
         const d = this.draw;
         this.draw = null;
         if (!d) return;
+
+        if (d.kind === "delete") {
+            this.markForDeletion(d, document.elementFromPoint(e.clientX, e.clientY));
+            const marks = d.deleteMarks!;
+            if (marks.size > 0) {
+                for (const el of marks.keys()) el.remove();
+                this.selection = this.selection.filter((s) => !marks.has(s));
+                this.refreshSelectionBoxes();
+                this.onSelectionChange(this.selection);
+                this.commit();
+            }
+            this.onStatus(marks.size > 0 ? `Deleted ${marks.size} shape${marks.size === 1 ? "" : "s"}` : "Nothing deleted");
+            return;
+        }
 
         if (d.kind === "select") {
             if (d.marqueeEl) {

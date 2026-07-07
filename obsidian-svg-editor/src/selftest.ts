@@ -114,6 +114,31 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         core.undo();
         check("undo restores deleted shapes", core.contentChildren().length === countBefore, `count=${core.contentChildren().length}`);
 
+        // ---- 6b. Delete tool sweeps over shapes (press, drag across, release) ----
+        modal.setTool("rect");
+        drag(pt(0.05, 0.45), pt(0.15, 0.55));
+        drag(pt(0.25, 0.45), pt(0.35, 0.55));
+        const preSweep = core.contentChildren().length;
+        const [r1, r2] = core.contentChildren().slice(-2);
+        const b1 = r1.getBoundingClientRect();
+        const b2 = r2.getBoundingClientRect();
+        modal.setTool("delete");
+        // Start on empty canvas, sweep across both rects' strokes, release on empty.
+        firePointer(svg, "pointerdown", b1.left - 15, b1.top + b1.height / 2);
+        firePointer(window, "pointermove", b1.left + 1, b1.top + b1.height / 2);
+        firePointer(window, "pointermove", b2.left + 1, b2.top + b2.height / 2);
+        firePointer(window, "pointerup", b2.right + 15, b2.top + b2.height / 2);
+        check("delete tool sweep removes all swept shapes", core.contentChildren().length === preSweep - 2, `${preSweep} → ${core.contentChildren().length}`);
+        core.undo();
+        const restored = core.contentChildren();
+        const sweptOpacityClean = restored
+            .slice(-2)
+            .every((el) => (el.getAttribute("opacity") ?? "1") === "1" || el.getAttribute("opacity") === null);
+        check("undo restores swept shapes without fade", restored.length === preSweep && sweptOpacityClean, `count=${restored.length}`);
+        // Redo the sweep so the canvas is back to the original shapes for the checks below.
+        core.redo();
+        check("redo re-applies sweep deletion", core.contentChildren().length === countBefore, `count=${core.contentChildren().length}`);
+
         // ---- 7. Code mode round-trip ----
         const toCode = modal.setMode("code");
         check("switch to code mode", toCode && modal.codeArea.value.includes("<svg"), modal.codeArea.value.slice(0, 60));
