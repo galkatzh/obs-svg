@@ -1,6 +1,6 @@
 # Obsidian SVG Editor
 
-An Obsidian plugin that turns ```` ```svg ```` code blocks into inline drawings you can edit **visually** — modeled on the vanilla-JS [Javascript-SVG-editor](../Javascript-SVG-editor) — with a **code mode** for editing the raw SVG source.
+An Obsidian plugin that turns ```` ```svg ```` code blocks and embedded `.svg` files into inline drawings you can edit **visually** — modeled on the vanilla-JS Javascript-SVG-editor — with a **code mode** for editing the raw SVG source.
 
 ## Features
 
