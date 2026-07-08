@@ -863,7 +863,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     const toolbar = main.createDiv({ cls: "svge-toolbar" });
     for (const t of TOOLS) {
       const btn = toolbar.createEl("button", {
-        cls: "svge-tool",
+        cls: "svge-tool clickable-icon",
         attr: { "aria-label": `${t.label} (${t.key.toUpperCase()})`, "data-tool": t.tool }
       });
       (0, import_obsidian.setIcon)(btn, t.icon);
@@ -920,7 +920,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.core.setStyle({ opacity: parseFloat(this.opacityInput.value) / 100 });
     });
     const zoomGroup = props.createDiv({ cls: "svge-prop-group svge-zoom", attr: { "aria-label": "Zoom" } });
-    const zoomOutBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom out (Ctrl+-)" } });
+    const zoomOutBtn = zoomGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Zoom out (Ctrl+-)" } });
     (0, import_obsidian.setIcon)(zoomOutBtn, "zoom-out");
     zoomOutBtn.addEventListener("click", () => this.core.zoomBy(1 / 1.25));
     this.zoomValueBtn = zoomGroup.createEl("button", {
@@ -929,21 +929,21 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       attr: { "aria-label": "Reset zoom (Ctrl+0)" }
     });
     this.zoomValueBtn.addEventListener("click", () => this.core.resetZoom());
-    const zoomInBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom in (Ctrl+=)" } });
+    const zoomInBtn = zoomGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Zoom in (Ctrl+=)" } });
     (0, import_obsidian.setIcon)(zoomInBtn, "zoom-in");
     zoomInBtn.addEventListener("click", () => this.core.zoomBy(1.25));
     const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
-    this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
+    this.deleteSelBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Delete selection (Del)" } });
     (0, import_obsidian.setIcon)(this.deleteSelBtn, "delete");
     this.deleteSelBtn.disabled = true;
     this.deleteSelBtn.addEventListener("click", () => this.core.deleteSelection());
-    this.undoBtn = histGroup.createEl("button", { attr: { "aria-label": "Undo (Ctrl+Z)" } });
+    this.undoBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Undo (Ctrl+Z)" } });
     (0, import_obsidian.setIcon)(this.undoBtn, "undo-2");
     this.undoBtn.addEventListener("click", () => this.core.undo());
-    this.redoBtn = histGroup.createEl("button", { attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
+    this.redoBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
     (0, import_obsidian.setIcon)(this.redoBtn, "redo-2");
     this.redoBtn.addEventListener("click", () => this.core.redo());
-    const clearBtn = histGroup.createEl("button", { attr: { "aria-label": "Clear canvas" } });
+    const clearBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Clear canvas" } });
     (0, import_obsidian.setIcon)(clearBtn, "trash-2");
     clearBtn.addEventListener("click", () => this.core.clearAll());
     this.codeEl = body.createDiv({ cls: "svge-code" });
@@ -1323,6 +1323,12 @@ async function runSelfTest(plugin) {
         check("modal fills screen width on mobile", mw >= window.innerWidth * 0.95, `${Math.round(mw)} vs ${window.innerWidth}`);
         const tb = mEl.querySelector(".svge-toolbar").getBoundingClientRect();
         check("toolbar is horizontal on mobile", tb.width > tb.height, `${Math.round(tb.width)}\xD7${Math.round(tb.height)}`);
+        const toolIcon = mEl.querySelector(".svge-tool svg")?.getBoundingClientRect();
+        check(
+          "tool icons keep full size under themed button padding",
+          (toolIcon?.width ?? 0) >= 18,
+          `icon=${Math.round(toolIcon?.width ?? 0)}px`
+        );
         const mCore = mModal.core;
         const mSvg = mCore.svgEl;
         const mr = mSvg.getBoundingClientRect();

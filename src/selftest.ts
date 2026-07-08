@@ -266,6 +266,14 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 check("modal fills screen width on mobile", mw >= window.innerWidth * 0.95, `${Math.round(mw)} vs ${window.innerWidth}`);
                 const tb = mEl.querySelector(".svge-toolbar")!.getBoundingClientRect();
                 check("toolbar is horizontal on mobile", tb.width > tb.height, `${Math.round(tb.width)}×${Math.round(tb.height)}`);
+                // Obsidian's mobile theme pads buttons horizontally; icon-only
+                // tool buttons must stay padding-free or the icon collapses.
+                const toolIcon = mEl.querySelector(".svge-tool svg")?.getBoundingClientRect();
+                check(
+                    "tool icons keep full size under themed button padding",
+                    (toolIcon?.width ?? 0) >= 18,
+                    `icon=${Math.round(toolIcon?.width ?? 0)}px`
+                );
 
                 // Draw a rect with touch pointer events.
                 const mCore = mModal.core;
