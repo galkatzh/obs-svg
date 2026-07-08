@@ -123,6 +123,8 @@ var SvgEditorCore = class {
     /** Live client positions of touch pointers on the canvas (pinch tracking). */
     this.touches = /* @__PURE__ */ new Map();
     this.pinch = null;
+    /** Middle-button drag pan: the pointer driving it and its last position. */
+    this.pan = null;
     this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
     this.svgEl.classList.add("svge-canvas");
     this.overlayEl = containerEl.doc.createElementNS(SVG_NS, "g");
@@ -130,6 +132,7 @@ var SvgEditorCore = class {
     this.svgEl.appendChild(this.overlayEl);
     containerEl.appendChild(this.svgEl);
     this.svgEl.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+    containerEl.addEventListener("pointerdown", (e) => this.handlePanStart(e));
     containerEl.addEventListener("wheel", this.boundWheel, { passive: false });
     this.applyViewBox();
   }
@@ -149,7 +152,7 @@ var SvgEditorCore = class {
     this.svgEl.win.addEventListener("pointercancel", this.boundPointerUp);
   }
   unhookWindowIfIdle() {
-    if (!this.windowHooked || this.draw || this.pinch || this.touches.size > 0) return;
+    if (!this.windowHooked || this.draw || this.pinch || this.pan || this.touches.size > 0) return;
     this.windowHooked = false;
     this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
     this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
@@ -296,6 +299,20 @@ var SvgEditorCore = class {
     pinch.lastCenter = center;
     const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
     this.setZoom(pinch.startZoom * (dist / pinch.startDist), center);
+  }
+  /** Middle-button drag pans the view (display-only, like zoom). */
+  handlePanStart(e) {
+    if (e.button !== 1 || this.pan || this.pinch) return;
+    this.cancelDraw();
+    this.pan = { pointerId: e.pointerId, last: { x: e.clientX, y: e.clientY } };
+    this.containerEl.classList.add("svge-panning");
+    this.hookWindow();
+    e.preventDefault();
+  }
+  endPan() {
+    this.pan = null;
+    this.containerEl.classList.remove("svge-panning");
+    this.unhookWindowIfIdle();
   }
   // ------------------------------------------------------------------
   // History
@@ -504,7 +521,7 @@ var SvgEditorCore = class {
         return;
       }
     }
-    if (e.button !== 0 || !e.isPrimary || this.draw || this.pinch) return;
+    if (e.button !== 0 || !e.isPrimary || this.draw || this.pinch || this.pan) return;
     const p = this.eventPoint(e);
     if (this.tool === "delete") {
       this.draw = { kind: "delete", start: p, deleteMarks: /* @__PURE__ */ new Map() };
@@ -619,6 +636,12 @@ var SvgEditorCore = class {
     shape.setAttribute("opacity", String(faded));
   }
   handlePointerMove(e) {
+    if (this.pan && e.pointerId === this.pan.pointerId) {
+      this.containerEl.scrollLeft -= e.clientX - this.pan.last.x;
+      this.containerEl.scrollTop -= e.clientY - this.pan.last.y;
+      this.pan.last = { x: e.clientX, y: e.clientY };
+      return;
+    }
     if (this.touches.has(e.pointerId)) {
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.pinch && this.touches.size >= 2) {
@@ -677,6 +700,10 @@ var SvgEditorCore = class {
     }
   }
   handlePointerUp(e) {
+    if (this.pan && e.pointerId === this.pan.pointerId) {
+      this.endPan();
+      return;
+    }
     if (this.touches.delete(e.pointerId) && this.pinch && this.touches.size < 2) {
       this.pinch = null;
     }
@@ -781,8 +808,8 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     this.mode = "visual";
     this.tabButtons = {};
     this.toolButtons = {};
-    /** Compact layout: phones/tablets, or a narrow desktop window. */
-    this.compactQuery = activeWindow.matchMedia("(max-width: 640px)");
+    /** Compact layout: phones/tablets, or a narrow/short desktop window. */
+    this.compactQuery = activeWindow.matchMedia("(max-width: 640px), (max-height: 500px)");
     this.updateCompact = () => {
       this.modalEl.toggleClass(
         "svge-compact",
@@ -836,7 +863,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     const toolbar = main.createDiv({ cls: "svge-toolbar" });
     for (const t of TOOLS) {
       const btn = toolbar.createEl("button", {
-        cls: "svge-tool",
+        cls: "svge-tool clickable-icon",
         attr: { "aria-label": `${t.label} (${t.key.toUpperCase()})`, "data-tool": t.tool }
       });
       (0, import_obsidian.setIcon)(btn, t.icon);
@@ -893,7 +920,7 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.core.setStyle({ opacity: parseFloat(this.opacityInput.value) / 100 });
     });
     const zoomGroup = props.createDiv({ cls: "svge-prop-group svge-zoom", attr: { "aria-label": "Zoom" } });
-    const zoomOutBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom out (Ctrl+-)" } });
+    const zoomOutBtn = zoomGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Zoom out (Ctrl+-)" } });
     (0, import_obsidian.setIcon)(zoomOutBtn, "zoom-out");
     zoomOutBtn.addEventListener("click", () => this.core.zoomBy(1 / 1.25));
     this.zoomValueBtn = zoomGroup.createEl("button", {
@@ -902,21 +929,21 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       attr: { "aria-label": "Reset zoom (Ctrl+0)" }
     });
     this.zoomValueBtn.addEventListener("click", () => this.core.resetZoom());
-    const zoomInBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom in (Ctrl+=)" } });
+    const zoomInBtn = zoomGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Zoom in (Ctrl+=)" } });
     (0, import_obsidian.setIcon)(zoomInBtn, "zoom-in");
     zoomInBtn.addEventListener("click", () => this.core.zoomBy(1.25));
     const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
-    this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
+    this.deleteSelBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Delete selection (Del)" } });
     (0, import_obsidian.setIcon)(this.deleteSelBtn, "delete");
     this.deleteSelBtn.disabled = true;
     this.deleteSelBtn.addEventListener("click", () => this.core.deleteSelection());
-    this.undoBtn = histGroup.createEl("button", { attr: { "aria-label": "Undo (Ctrl+Z)" } });
+    this.undoBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Undo (Ctrl+Z)" } });
     (0, import_obsidian.setIcon)(this.undoBtn, "undo-2");
     this.undoBtn.addEventListener("click", () => this.core.undo());
-    this.redoBtn = histGroup.createEl("button", { attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
+    this.redoBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
     (0, import_obsidian.setIcon)(this.redoBtn, "redo-2");
     this.redoBtn.addEventListener("click", () => this.core.redo());
-    const clearBtn = histGroup.createEl("button", { attr: { "aria-label": "Clear canvas" } });
+    const clearBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Clear canvas" } });
     (0, import_obsidian.setIcon)(clearBtn, "trash-2");
     clearBtn.addEventListener("click", () => this.core.clearAll());
     this.codeEl = body.createDiv({ cls: "svge-code" });
@@ -1047,6 +1074,8 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       if (!this.applyCode()) return false;
     }
     this.mode = mode;
+    this.modalEl.toggleClass("svge-mode-visual", mode === "visual");
+    this.modalEl.toggleClass("svge-mode-code", mode === "code");
     this.visualEl.style.display = mode === "visual" ? "" : "none";
     this.codeEl.style.display = mode === "code" ? "" : "none";
     this.tabButtons["visual"].toggleClass("is-active", mode === "visual");
@@ -1294,6 +1323,12 @@ async function runSelfTest(plugin) {
         check("modal fills screen width on mobile", mw >= window.innerWidth * 0.95, `${Math.round(mw)} vs ${window.innerWidth}`);
         const tb = mEl.querySelector(".svge-toolbar").getBoundingClientRect();
         check("toolbar is horizontal on mobile", tb.width > tb.height, `${Math.round(tb.width)}\xD7${Math.round(tb.height)}`);
+        const toolIcon = mEl.querySelector(".svge-tool svg")?.getBoundingClientRect();
+        check(
+          "tool icons keep full size under themed button padding",
+          (toolIcon?.width ?? 0) >= 18,
+          `icon=${Math.round(toolIcon?.width ?? 0)}px`
+        );
         const mCore = mModal.core;
         const mSvg = mCore.svgEl;
         const mr = mSvg.getBoundingClientRect();
@@ -1547,6 +1582,68 @@ ${blockSource}
         );
       } finally {
         zModal?.close();
+      }
+    }
+    {
+      let pModal = null;
+      try {
+        pModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        pModal.open();
+        await sleep(150);
+        const pCore = pModal.core;
+        const pSvg = pCore.svgEl;
+        const wrap = pSvg.parentElement;
+        pCore.setZoom(3);
+        const wr = wrap.getBoundingClientRect();
+        const wcx = wr.left + wr.width / 2;
+        const wcy = wr.top + wr.height / 2;
+        pModal.setTool("rect");
+        const preShapes = pCore.contentChildren().length;
+        const sl0 = wrap.scrollLeft;
+        const st0 = wrap.scrollTop;
+        firePointer(pSvg, "pointerdown", wcx, wcy, { button: 1, buttons: 4 });
+        firePointer(window, "pointermove", wcx - 40, wcy - 30, { buttons: 4 });
+        firePointer(window, "pointerup", wcx - 40, wcy - 30, { button: 1, buttons: 0 });
+        check(
+          "middle-drag pans the zoomed canvas",
+          Math.abs(wrap.scrollLeft - (sl0 + 40)) < 2 && Math.abs(wrap.scrollTop - (st0 + 30)) < 2,
+          `scroll (${sl0},${st0}) \u2192 (${wrap.scrollLeft},${wrap.scrollTop})`
+        );
+        check(
+          "middle-drag does not draw",
+          pCore.contentChildren().length === preShapes,
+          `count=${pCore.contentChildren().length}`
+        );
+        const zBefore = pCore.getZoom();
+        const sl1 = wrap.scrollLeft;
+        const st1 = wrap.scrollTop;
+        const ta = { pointerId: 31, pointerType: "touch", isPrimary: true };
+        const tb = { pointerId: 32, pointerType: "touch", isPrimary: false };
+        firePointer(pSvg, "pointerdown", wcx - 25, wcy, ta);
+        firePointer(pSvg, "pointerdown", wcx + 25, wcy, tb);
+        firePointer(window, "pointermove", wcx - 75, wcy - 20, ta);
+        firePointer(window, "pointermove", wcx - 25, wcy - 20, tb);
+        firePointer(window, "pointerup", wcx - 75, wcy - 20, ta);
+        firePointer(window, "pointerup", wcx - 25, wcy - 20, tb);
+        check(
+          "two-finger drag pans without zooming",
+          pCore.getZoom() === zBefore && wrap.scrollLeft > sl1 + 25 && wrap.scrollTop > st1 + 2,
+          `zoom=${pCore.getZoom().toFixed(2)}, scroll (${sl1},${st1}) \u2192 (${wrap.scrollLeft},${wrap.scrollTop})`
+        );
+        check(
+          "visual-mode layout class set",
+          pModal.modalEl.classList.contains("svge-mode-visual"),
+          pModal.modalEl.className
+        );
+        pModal.setMode("code");
+        check(
+          "code-mode layout class set",
+          pModal.modalEl.classList.contains("svge-mode-code") && !pModal.modalEl.classList.contains("svge-mode-visual"),
+          pModal.modalEl.className
+        );
+      } finally {
+        pModal?.close();
       }
     }
   } catch (e) {

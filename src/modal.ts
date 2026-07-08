@@ -43,8 +43,8 @@ export class SvgEditorModal extends Modal {
     private deleteSelBtn!: HTMLButtonElement;
     private zoomValueBtn!: HTMLButtonElement;
 
-    /** Compact layout: phones/tablets, or a narrow desktop window. */
-    private compactQuery = activeWindow.matchMedia("(max-width: 640px)");
+    /** Compact layout: phones/tablets, or a narrow/short desktop window. */
+    private compactQuery = activeWindow.matchMedia("(max-width: 640px), (max-height: 500px)");
     private updateCompact = (): void => {
         this.modalEl.toggleClass(
             "svge-compact",
@@ -116,8 +116,10 @@ export class SvgEditorModal extends Modal {
 
         const toolbar = main.createDiv({ cls: "svge-toolbar" });
         for (const t of TOOLS) {
+            // clickable-icon: exempt from the theme's text-button padding,
+            // which would otherwise squeeze the icon out (e.g. on tablets).
             const btn = toolbar.createEl("button", {
-                cls: "svge-tool",
+                cls: "svge-tool clickable-icon",
                 attr: { "aria-label": `${t.label} (${t.key.toUpperCase()})`, "data-tool": t.tool },
             });
             setIcon(btn, t.icon);
@@ -178,7 +180,7 @@ export class SvgEditorModal extends Modal {
         });
 
         const zoomGroup = props.createDiv({ cls: "svge-prop-group svge-zoom", attr: { "aria-label": "Zoom" } });
-        const zoomOutBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom out (Ctrl+-)" } });
+        const zoomOutBtn = zoomGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Zoom out (Ctrl+-)" } });
         setIcon(zoomOutBtn, "zoom-out");
         zoomOutBtn.addEventListener("click", () => this.core.zoomBy(1 / 1.25));
         this.zoomValueBtn = zoomGroup.createEl("button", {
@@ -187,22 +189,22 @@ export class SvgEditorModal extends Modal {
             attr: { "aria-label": "Reset zoom (Ctrl+0)" },
         });
         this.zoomValueBtn.addEventListener("click", () => this.core.resetZoom());
-        const zoomInBtn = zoomGroup.createEl("button", { attr: { "aria-label": "Zoom in (Ctrl+=)" } });
+        const zoomInBtn = zoomGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Zoom in (Ctrl+=)" } });
         setIcon(zoomInBtn, "zoom-in");
         zoomInBtn.addEventListener("click", () => this.core.zoomBy(1.25));
 
         const histGroup = props.createDiv({ cls: "svge-prop-group svge-hist" });
-        this.deleteSelBtn = histGroup.createEl("button", { attr: { "aria-label": "Delete selection (Del)" } });
+        this.deleteSelBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Delete selection (Del)" } });
         setIcon(this.deleteSelBtn, "delete");
         this.deleteSelBtn.disabled = true;
         this.deleteSelBtn.addEventListener("click", () => this.core.deleteSelection());
-        this.undoBtn = histGroup.createEl("button", { attr: { "aria-label": "Undo (Ctrl+Z)" } });
+        this.undoBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Undo (Ctrl+Z)" } });
         setIcon(this.undoBtn, "undo-2");
         this.undoBtn.addEventListener("click", () => this.core.undo());
-        this.redoBtn = histGroup.createEl("button", { attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
+        this.redoBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Redo (Ctrl+Shift+Z)" } });
         setIcon(this.redoBtn, "redo-2");
         this.redoBtn.addEventListener("click", () => this.core.redo());
-        const clearBtn = histGroup.createEl("button", { attr: { "aria-label": "Clear canvas" } });
+        const clearBtn = histGroup.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "Clear canvas" } });
         setIcon(clearBtn, "trash-2");
         clearBtn.addEventListener("click", () => this.core.clearAll());
 
@@ -346,6 +348,10 @@ export class SvgEditorModal extends Modal {
             if (!this.applyCode()) return false;
         }
         this.mode = mode;
+        // Mode classes let CSS scope layout (e.g. the landscape floating
+        // header applies only in visual mode; code mode keeps it in flow).
+        this.modalEl.toggleClass("svge-mode-visual", mode === "visual");
+        this.modalEl.toggleClass("svge-mode-code", mode === "code");
         this.visualEl.style.display = mode === "visual" ? "" : "none";
         this.codeEl.style.display = mode === "code" ? "" : "none";
         this.tabButtons["visual"].toggleClass("is-active", mode === "visual");
