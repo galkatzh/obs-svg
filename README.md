@@ -13,10 +13,10 @@ An Obsidian plugin that turns ```` ```svg ```` code blocks and embedded `.svg` f
   - Click / shift-click / marquee (rubber-band) selection; drag to move; `Delete` removes the selection; `Ctrl/Cmd+A` selects all
   - Stroke color & width, fill color with "none" toggle, opacity — applied to new shapes or to the current selection
   - Undo / redo (`Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`), clear canvas, canvas size controls
-  - **Zoom** — mouse wheel over the canvas (zooms around the cursor), pinch on touch screens (a second finger cancels the stroke in progress and zooms/pans instead), plus zoom buttons and `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / `Ctrl/Cmd+0`. Zoom is view-only and never changes the saved SVG.
+  - **Zoom & pan** — mouse wheel over the canvas zooms around the cursor and middle-button drag pans; on touch screens pinch to zoom and drag with two fingers to pan (a second finger cancels the stroke in progress). Plus zoom buttons and `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / `Ctrl/Cmd+0`. Zoom and pan are view-only and never change the saved SVG.
 - **Code mode** — edit the SVG source in a textarea; parse errors are shown and rejected without losing your drawing. Switching tabs keeps both views in sync.
 - `Ctrl/Cmd+Enter` saves from either mode.
-- **Mobile friendly** — works on Obsidian mobile: touch drawing (single-finger gestures; two fingers pinch-zoom and pan), a full-screen editor with a horizontal toolbar and finger-sized buttons on phones/narrow windows, an on-screen delete-selection button, and an always-visible edit button on rendered blocks (no hover on touch screens).
+- **Mobile friendly** — works on Obsidian mobile: touch drawing (single-finger gestures; two fingers pinch-zoom and pan), a full-screen editor with a horizontal toolbar and finger-sized buttons on phones/narrow windows, an on-screen delete-selection button, and an always-visible edit button on rendered blocks (no hover on touch screens). In landscape (or any short window) the header, tool strip and properties bar float translucently over the canvas so the drawing gets the full screen height.
 
 ## Commands
 
@@ -60,7 +60,7 @@ obsidian vault=<name> command id=svg-editor:self-test
 obsidian vault=<name> read path=SVGE-SelfTest-Report.md
 ```
 
-The self-test opens the real modal, draws each shape with synthetic pointer events, exercises select/move, sweep-to-delete, styling, undo/redo, code-mode round-trips, invalid-code rejection, canvas resize, save, write-back into a real note (including the stale-line fallback search), the markdown renderer, sanitization, the mobile behavior (compact layout, touch drawing, delete button, visible edit button), `.svg` file editing (load, save back to the file, embed decoration), and zoom (wheel, pinch, reset, coordinate mapping while zoomed, and that zoom never leaks into the saved source) — and reports PASS/FAIL per check. The mobile checks run against the real mobile UI when the app is mobile/emulated, and against a simulated `is-mobile` body class on desktop; the test itself never toggles emulation because `app.emulateMobile()` reloads the app window.
+The self-test opens the real modal, draws each shape with synthetic pointer events, exercises select/move, sweep-to-delete, styling, undo/redo, code-mode round-trips, invalid-code rejection, canvas resize, save, write-back into a real note (including the stale-line fallback search), the markdown renderer, sanitization, the mobile behavior (compact layout, touch drawing, delete button, visible edit button), `.svg` file editing (load, save back to the file, embed decoration), zoom (wheel, pinch, reset, coordinate mapping while zoomed, and that zoom never leaks into the saved source), and panning (middle-button drag, two-finger drag) — and reports PASS/FAIL per check. The mobile checks run against the real mobile UI when the app is mobile/emulated, and against a simulated `is-mobile` body class on desktop; the test itself never toggles emulation because `app.emulateMobile()` reloads the app window.
 
 ## Layout
 

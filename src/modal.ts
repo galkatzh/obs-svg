@@ -43,8 +43,8 @@ export class SvgEditorModal extends Modal {
     private deleteSelBtn!: HTMLButtonElement;
     private zoomValueBtn!: HTMLButtonElement;
 
-    /** Compact layout: phones/tablets, or a narrow desktop window. */
-    private compactQuery = activeWindow.matchMedia("(max-width: 640px)");
+    /** Compact layout: phones/tablets, or a narrow/short desktop window. */
+    private compactQuery = activeWindow.matchMedia("(max-width: 640px), (max-height: 500px)");
     private updateCompact = (): void => {
         this.modalEl.toggleClass(
             "svge-compact",
@@ -346,6 +346,10 @@ export class SvgEditorModal extends Modal {
             if (!this.applyCode()) return false;
         }
         this.mode = mode;
+        // Mode classes let CSS scope layout (e.g. the landscape floating
+        // header applies only in visual mode; code mode keeps it in flow).
+        this.modalEl.toggleClass("svge-mode-visual", mode === "visual");
+        this.modalEl.toggleClass("svge-mode-code", mode === "code");
         this.visualEl.style.display = mode === "visual" ? "" : "none";
         this.codeEl.style.display = mode === "code" ? "" : "none";
         this.tabButtons["visual"].toggleClass("is-active", mode === "visual");

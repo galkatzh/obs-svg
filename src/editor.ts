@@ -157,6 +157,8 @@ export class SvgEditorCore {
     /** Live client positions of touch pointers on the canvas (pinch tracking). */
     private touches = new Map<number, Point>();
     private pinch: PinchState | null = null;
+    /** Middle-button drag pan: the pointer driving it and its last position. */
+    private pan: { pointerId: number; last: Point } | null = null;
 
     constructor(private containerEl: HTMLElement) {
         this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
@@ -167,6 +169,8 @@ export class SvgEditorCore {
         containerEl.appendChild(this.svgEl);
 
         this.svgEl.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+        // On the wrap (not the svg) so panning works from the padding area too.
+        containerEl.addEventListener("pointerdown", (e) => this.handlePanStart(e));
         containerEl.addEventListener("wheel", this.boundWheel, { passive: false });
         this.applyViewBox();
     }
@@ -189,7 +193,7 @@ export class SvgEditorCore {
     }
 
     private unhookWindowIfIdle(): void {
-        if (!this.windowHooked || this.draw || this.pinch || this.touches.size > 0) return;
+        if (!this.windowHooked || this.draw || this.pinch || this.pan || this.touches.size > 0) return;
         this.windowHooked = false;
         this.svgEl.win.removeEventListener("pointermove", this.boundPointerMove);
         this.svgEl.win.removeEventListener("pointerup", this.boundPointerUp);
@@ -368,6 +372,22 @@ export class SvgEditorCore {
         pinch.lastCenter = center;
         const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
         this.setZoom(pinch.startZoom * (dist / pinch.startDist), center);
+    }
+
+    /** Middle-button drag pans the view (display-only, like zoom). */
+    private handlePanStart(e: PointerEvent): void {
+        if (e.button !== 1 || this.pan || this.pinch) return;
+        this.cancelDraw();
+        this.pan = { pointerId: e.pointerId, last: { x: e.clientX, y: e.clientY } };
+        this.containerEl.classList.add("svge-panning");
+        this.hookWindow();
+        e.preventDefault();
+    }
+
+    private endPan(): void {
+        this.pan = null;
+        this.containerEl.classList.remove("svge-panning");
+        this.unhookWindowIfIdle();
     }
 
     // ------------------------------------------------------------------
@@ -603,7 +623,7 @@ export class SvgEditorCore {
             }
         }
         // Primary button/finger only; a second touch must not start a new gesture.
-        if (e.button !== 0 || !e.isPrimary || this.draw || this.pinch) return;
+        if (e.button !== 0 || !e.isPrimary || this.draw || this.pinch || this.pan) return;
         const p = this.eventPoint(e);
 
         if (this.tool === "delete") {
@@ -726,6 +746,12 @@ export class SvgEditorCore {
     }
 
     private handlePointerMove(e: PointerEvent): void {
+        if (this.pan && e.pointerId === this.pan.pointerId) {
+            this.containerEl.scrollLeft -= e.clientX - this.pan.last.x;
+            this.containerEl.scrollTop -= e.clientY - this.pan.last.y;
+            this.pan.last = { x: e.clientX, y: e.clientY };
+            return;
+        }
         if (this.touches.has(e.pointerId)) {
             this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
             if (this.pinch && this.touches.size >= 2) {
@@ -788,6 +814,10 @@ export class SvgEditorCore {
     }
 
     private handlePointerUp(e: PointerEvent): void {
+        if (this.pan && e.pointerId === this.pan.pointerId) {
+            this.endPan();
+            return;
+        }
         if (this.touches.delete(e.pointerId) && this.pinch && this.touches.size < 2) {
             this.pinch = null;
         }

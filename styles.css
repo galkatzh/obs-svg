@@ -78,6 +78,8 @@ body.is-mobile .svge-edit-btn {
     max-width: none;
     max-height: none;
     padding: 0;
+    /* Translucent chrome for bars that float over the canvas (landscape). */
+    --svge-overlay-bg: color-mix(in srgb, var(--background-secondary) 85%, transparent);
 }
 
 .svge-modal .modal-content.svge-content {
@@ -244,6 +246,12 @@ svg.svge-canvas[data-tool="select"] {
 
 svg.svge-canvas[data-tool="delete"] {
     cursor: not-allowed;
+}
+
+/* Middle-button drag pan in progress. */
+.svge-canvas-wrap.svge-panning,
+.svge-canvas-wrap.svge-panning svg.svge-canvas {
+    cursor: grabbing;
 }
 
 svg.svge-canvas .svge-selbox {
@@ -456,10 +464,10 @@ body.is-mobile .modal.svge-modal,
     justify-content: center;
 }
 
-/* Finger-sized targets. */
+/* Finger-sized targets — compact but still comfortable to tap. */
 .svge-modal.svge-compact .svge-tool {
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
 }
 
 .svge-modal.svge-compact .svge-hist button,
@@ -468,16 +476,107 @@ body.is-mobile .modal.svge-modal,
     min-height: 36px;
 }
 
+/* Tighter chrome so the canvas gets as much of a small screen as possible. */
+.svge-modal.svge-compact .svge-visual {
+    gap: var(--size-2-3);
+    padding-top: var(--size-2-3);
+}
+
+.svge-modal.svge-compact .svge-main {
+    gap: var(--size-2-3);
+}
+
 .svge-modal.svge-compact .svge-props {
-    gap: var(--size-4-2);
+    gap: var(--size-2-2) var(--size-4-2);
+    padding: var(--size-2-2) var(--size-2-3);
     justify-content: center;
 }
 
 .svge-modal.svge-compact .svge-props input[type="color"] {
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
 }
 
 .svge-modal.svge-compact .svge-props input[type="range"] {
     width: 72px;
+}
+
+/* ==================================================================
+   Landscape phones / short windows — the bars float over the canvas
+   so it gets the full modal height; pan + zoom keep every part of the
+   drawing reachable underneath them.
+   ================================================================== */
+
+@media (max-height: 500px) {
+    .svge-modal.svge-compact .svge-content {
+        position: relative;
+    }
+
+    .svge-modal.svge-compact .svge-status {
+        display: none;
+    }
+
+    /* Header floats along the top edge in visual mode only; code mode
+       keeps it in flow so the textarea never sits underneath it. */
+    .svge-modal.svge-compact.svge-mode-visual .svge-header {
+        position: absolute;
+        top: var(--size-2-2);
+        left: var(--size-2-2);
+        right: var(--size-2-2);
+        z-index: 3;
+        padding: var(--size-2-2);
+        border-bottom: none;
+        border-radius: var(--radius-m);
+        background: var(--svge-overlay-bg);
+        backdrop-filter: blur(6px);
+        flex-wrap: nowrap;
+        overflow-x: auto;
+    }
+
+    .svge-modal.svge-compact .svge-size input {
+        width: 52px;
+    }
+
+    .svge-modal.svge-compact .svge-visual {
+        position: relative;
+        padding-top: 0;
+        gap: 0;
+    }
+
+    /* Tool strip floats on the left, back to a vertical column. */
+    .svge-modal.svge-compact .svge-toolbar {
+        position: absolute;
+        left: var(--size-2-2);
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 2;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        align-self: auto;
+        background: var(--svge-overlay-bg);
+        backdrop-filter: blur(6px);
+    }
+
+    /* Props bar floats along the bottom as one horizontally scrollable row. */
+    .svge-modal.svge-compact .svge-props {
+        position: absolute;
+        left: var(--size-2-2);
+        right: var(--size-2-2);
+        bottom: var(--size-2-2);
+        z-index: 2;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        justify-content: flex-start;
+        background: var(--svge-overlay-bg);
+        backdrop-filter: blur(6px);
+    }
+
+    .svge-modal.svge-compact .svge-props > * {
+        flex-shrink: 0;
+    }
+
+    /* Reserve room so the fitted (100%) canvas sits clear of the bars. */
+    .svge-modal.svge-compact.svge-mode-visual .svge-canvas-wrap {
+        padding: 48px var(--size-4-2) 56px 56px;
+    }
 }

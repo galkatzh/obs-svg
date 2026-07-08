@@ -551,6 +551,76 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 zModal?.close();
             }
         }
+
+        // ---- 20. Pan: middle-button drag and two-finger drag ----
+        {
+            let pModal: SvgEditorModal | null = null;
+            try {
+                pModal = new SvgEditorModal(plugin.app, "", () => {});
+                pModal.open();
+                await sleep(150);
+                const pCore = pModal.core;
+                const pSvg = pCore.svgEl;
+                const wrap = pSvg.parentElement as HTMLElement;
+                pCore.setZoom(3); // overflow the wrap so there is somewhere to pan
+                const wr = wrap.getBoundingClientRect();
+                const wcx = wr.left + wr.width / 2;
+                const wcy = wr.top + wr.height / 2;
+
+                // Middle-button drag pans and must not draw.
+                pModal.setTool("rect");
+                const preShapes = pCore.contentChildren().length;
+                const sl0 = wrap.scrollLeft;
+                const st0 = wrap.scrollTop;
+                firePointer(pSvg, "pointerdown", wcx, wcy, { button: 1, buttons: 4 });
+                firePointer(window, "pointermove", wcx - 40, wcy - 30, { buttons: 4 });
+                firePointer(window, "pointerup", wcx - 40, wcy - 30, { button: 1, buttons: 0 });
+                check(
+                    "middle-drag pans the zoomed canvas",
+                    Math.abs(wrap.scrollLeft - (sl0 + 40)) < 2 && Math.abs(wrap.scrollTop - (st0 + 30)) < 2,
+                    `scroll (${sl0},${st0}) → (${wrap.scrollLeft},${wrap.scrollTop})`
+                );
+                check(
+                    "middle-drag does not draw",
+                    pCore.contentChildren().length === preShapes,
+                    `count=${pCore.contentChildren().length}`
+                );
+
+                // Two fingers moving together (constant spread) pan without zooming.
+                const zBefore = pCore.getZoom();
+                const sl1 = wrap.scrollLeft;
+                const st1 = wrap.scrollTop;
+                const ta: PointerEventInit = { pointerId: 31, pointerType: "touch", isPrimary: true };
+                const tb: PointerEventInit = { pointerId: 32, pointerType: "touch", isPrimary: false };
+                firePointer(pSvg, "pointerdown", wcx - 25, wcy, ta);
+                firePointer(pSvg, "pointerdown", wcx + 25, wcy, tb);
+                firePointer(window, "pointermove", wcx - 75, wcy - 20, ta);
+                firePointer(window, "pointermove", wcx - 25, wcy - 20, tb);
+                firePointer(window, "pointerup", wcx - 75, wcy - 20, ta);
+                firePointer(window, "pointerup", wcx - 25, wcy - 20, tb);
+                check(
+                    "two-finger drag pans without zooming",
+                    pCore.getZoom() === zBefore && wrap.scrollLeft > sl1 + 25 && wrap.scrollTop > st1 + 2,
+                    `zoom=${pCore.getZoom().toFixed(2)}, scroll (${sl1},${st1}) → (${wrap.scrollLeft},${wrap.scrollTop})`
+                );
+
+                // Mode classes drive the landscape overlay layout.
+                check(
+                    "visual-mode layout class set",
+                    pModal.modalEl.classList.contains("svge-mode-visual"),
+                    pModal.modalEl.className
+                );
+                pModal.setMode("code");
+                check(
+                    "code-mode layout class set",
+                    pModal.modalEl.classList.contains("svge-mode-code") &&
+                        !pModal.modalEl.classList.contains("svge-mode-visual"),
+                    pModal.modalEl.className
+                );
+            } finally {
+                pModal?.close();
+            }
+        }
     } catch (e) {
         check("self-test crashed", false, e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e));
     } finally {
