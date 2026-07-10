@@ -106,6 +106,10 @@ interface DrawState {
 const DELETE_FADE_FACTOR = 0.6;
 const DELETE_MIN_OPACITY = 0.15;
 
+// Padding around a selected shape's bounding box (svg units): drawn on the
+// selection boxes and used as the hit area for dragging the selection.
+const SELBOX_PAD = 2;
+
 // View zoom bounds (zoom is display-only and never touches the saved SVG).
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
@@ -552,11 +556,24 @@ export class SvgEditorCore {
         };
     }
 
+    /** Whether a point (svg coords) falls inside any selected shape's selection box. */
+    private selectionAt(p: Point): boolean {
+        return this.selection.some((el) => {
+            const bb = this.svgBBox(el);
+            return (
+                p.x >= bb.x - SELBOX_PAD &&
+                p.x <= bb.x + bb.w + SELBOX_PAD &&
+                p.y >= bb.y - SELBOX_PAD &&
+                p.y <= bb.y + bb.h + SELBOX_PAD
+            );
+        });
+    }
+
     private refreshSelectionBoxes(): void {
         for (const box of Array.from(this.overlayEl.querySelectorAll(".svge-selbox"))) box.remove();
         for (const el of this.selection) {
             const bb = this.svgBBox(el);
-            const pad = 2;
+            const pad = SELBOX_PAD;
             const rect = this.svgEl.doc.createElementNS(SVG_NS, "rect");
             rect.setAttribute("class", "svge-selbox");
             rect.setAttribute("x", String(bb.x - pad));
@@ -648,6 +665,20 @@ export class SvgEditorCore {
                 }
                 this.refreshSelectionBoxes();
                 this.onSelectionChange(this.selection);
+                this.draw = {
+                    kind: "select",
+                    start: p,
+                    moved: false,
+                    moveTargets: this.selection.map((el) => ({
+                        el,
+                        baseTransform: el.getAttribute("transform"),
+                    })),
+                };
+            } else if (!e.shiftKey && this.selectionAt(p)) {
+                // Unfilled shapes don't catch pointer events in their interior,
+                // so a click there lands on the canvas background: when it falls
+                // inside the selection's boxes, drag the selection rather than
+                // clearing it for a marquee.
                 this.draw = {
                     kind: "select",
                     start: p,

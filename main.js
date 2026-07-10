@@ -82,6 +82,7 @@ function prettyPrintXml(xml) {
 }
 var DELETE_FADE_FACTOR = 0.6;
 var DELETE_MIN_OPACITY = 0.15;
+var SELBOX_PAD = 2;
 var MIN_ZOOM = 0.25;
 var MAX_ZOOM = 8;
 var SvgEditorCore = class {
@@ -457,11 +458,18 @@ var SvgEditorCore = class {
       h: Math.abs(b.y - a.y)
     };
   }
+  /** Whether a point (svg coords) falls inside any selected shape's selection box. */
+  selectionAt(p) {
+    return this.selection.some((el) => {
+      const bb = this.svgBBox(el);
+      return p.x >= bb.x - SELBOX_PAD && p.x <= bb.x + bb.w + SELBOX_PAD && p.y >= bb.y - SELBOX_PAD && p.y <= bb.y + bb.h + SELBOX_PAD;
+    });
+  }
   refreshSelectionBoxes() {
     for (const box of Array.from(this.overlayEl.querySelectorAll(".svge-selbox"))) box.remove();
     for (const el of this.selection) {
       const bb = this.svgBBox(el);
-      const pad = 2;
+      const pad = SELBOX_PAD;
       const rect = this.svgEl.doc.createElementNS(SVG_NS, "rect");
       rect.setAttribute("class", "svge-selbox");
       rect.setAttribute("x", String(bb.x - pad));
@@ -543,6 +551,16 @@ var SvgEditorCore = class {
         }
         this.refreshSelectionBoxes();
         this.onSelectionChange(this.selection);
+        this.draw = {
+          kind: "select",
+          start: p,
+          moved: false,
+          moveTargets: this.selection.map((el) => ({
+            el,
+            baseTransform: el.getAttribute("transform")
+          }))
+        };
+      } else if (!e.shiftKey && this.selectionAt(p)) {
         this.draw = {
           kind: "select",
           start: p,
@@ -1185,6 +1203,17 @@ async function runSelfTest(plugin) {
     firePointer(window, "pointerup", edge.x + 30, edge.y + 20);
     check("click selects shape", core.selection.length === 1, `selection=${core.selection.length}`);
     check("drag moves shape (transform set)", (shape.getAttribute("transform") ?? "").includes("translate"), shape.getAttribute("transform") ?? "(none)");
+    const tBefore = shape.getAttribute("transform") ?? "";
+    const ir = shape.getBoundingClientRect();
+    const ic = { x: ir.left + ir.width / 2, y: ir.top + ir.height / 2 };
+    firePointer(svg, "pointerdown", ic.x, ic.y);
+    firePointer(window, "pointermove", ic.x + 25, ic.y + 15);
+    firePointer(window, "pointerup", ic.x + 25, ic.y + 15);
+    check(
+      "drag inside unfilled selected shape moves it",
+      core.selection.length === 1 && (shape.getAttribute("transform") ?? "") !== tBefore,
+      `selection=${core.selection.length}, transform=${shape.getAttribute("transform")}`
+    );
     const before = shape.getAttribute("stroke");
     core.setStyle({ stroke: "#ff0000" });
     check("style change applies to selection", shape.getAttribute("stroke") === "#ff0000", `${before} \u2192 ${shape.getAttribute("stroke")}`);

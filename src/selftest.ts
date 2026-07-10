@@ -95,6 +95,21 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         check("click selects shape", core.selection.length === 1, `selection=${core.selection.length}`);
         check("drag moves shape (transform set)", (shape.getAttribute("transform") ?? "").includes("translate"), shape.getAttribute("transform") ?? "(none)");
 
+        // The rect has no fill, so a click in its interior lands on the canvas
+        // background; with the shape selected that drag must move it, not
+        // clear the selection and start a marquee.
+        const tBefore = shape.getAttribute("transform") ?? "";
+        const ir = shape.getBoundingClientRect();
+        const ic = { x: ir.left + ir.width / 2, y: ir.top + ir.height / 2 };
+        firePointer(svg, "pointerdown", ic.x, ic.y);
+        firePointer(window, "pointermove", ic.x + 25, ic.y + 15);
+        firePointer(window, "pointerup", ic.x + 25, ic.y + 15);
+        check(
+            "drag inside unfilled selected shape moves it",
+            core.selection.length === 1 && (shape.getAttribute("transform") ?? "") !== tBefore,
+            `selection=${core.selection.length}, transform=${shape.getAttribute("transform")}`
+        );
+
         // ---- 4. Style change applies to selection ----
         const before = shape.getAttribute("stroke");
         core.setStyle({ stroke: "#ff0000" });
