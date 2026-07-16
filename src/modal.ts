@@ -267,6 +267,19 @@ export class SvgEditorModal extends Modal {
             this.core.selectAll();
             return false;
         });
+        // Copy/paste: keep the browser default inside form fields (text
+        // copy/paste in the size inputs etc.), handle shapes otherwise.
+        this.scope.register(["Mod"], "c", (evt) => {
+            if (this.mode !== "visual" || this.inFormField(evt)) return true;
+            this.core.copySelection();
+            return false;
+        });
+        this.scope.register(["Mod"], "v", (evt) => {
+            if (this.mode !== "visual" || this.inFormField(evt)) return true;
+            this.setTool("select");
+            this.core.paste();
+            return false;
+        });
         this.scope.register(["Mod"], "Enter", () => {
             void this.save();
             return false;
@@ -290,12 +303,14 @@ export class SvgEditorModal extends Modal {
         this.modalEl.addEventListener("keydown", (evt) => this.handleKeydown(evt));
     }
 
+    private inFormField(evt: KeyboardEvent): boolean {
+        const target = evt.target as HTMLElement | null;
+        return !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+    }
+
     private handleKeydown(evt: KeyboardEvent): void {
         if (this.mode !== "visual") return;
-        const target = evt.target as HTMLElement | null;
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
-            return;
-        }
+        if (this.inFormField(evt)) return;
         if (evt.key === "Delete" || evt.key === "Backspace") {
             this.core.deleteSelection();
             evt.preventDefault();

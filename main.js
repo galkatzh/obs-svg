@@ -83,6 +83,9 @@ function prettyPrintXml(xml) {
 var DELETE_FADE_FACTOR = 0.6;
 var DELETE_MIN_OPACITY = 0.15;
 var SELBOX_PAD = 2;
+var shapeClipboard = [];
+var pasteGeneration = 0;
+var PASTE_OFFSET = 12;
 var HANDLE_DOT_PX = 7;
 var HANDLE_HIT_PX = 14;
 var HANDLE_EDGE_PX = 10;
@@ -444,6 +447,46 @@ var SvgEditorCore = class {
     this.onSelectionChange(this.selection);
     this.commit();
     this.onStatus(`Deleted ${n} shape${n === 1 ? "" : "s"}`);
+  }
+  /** Copy the selected shapes to the (session-wide) shape clipboard. */
+  copySelection() {
+    if (this.selection.length === 0) {
+      this.onStatus("Nothing selected to copy");
+      return;
+    }
+    const ser = new XMLSerializer();
+    shapeClipboard = this.selection.map((el) => ser.serializeToString(el));
+    pasteGeneration = 0;
+    const n = shapeClipboard.length;
+    this.onStatus(`Copied ${n} shape${n === 1 ? "" : "s"}`);
+  }
+  canPaste() {
+    return shapeClipboard.length > 0;
+  }
+  /** Paste the copied shapes, offset and selected. Repeated pastes cascade. */
+  paste() {
+    if (shapeClipboard.length === 0) {
+      this.onStatus("Nothing to paste \u2014 copy a selection first");
+      return;
+    }
+    pasteGeneration++;
+    const offset = PASTE_OFFSET * pasteGeneration;
+    const parsed = parseSvgSource(`<svg xmlns="${SVG_NS}">${shapeClipboard.join("")}</svg>`);
+    const pasted = [];
+    for (const child of Array.from(parsed.children)) {
+      const el = this.svgEl.doc.importNode(child, true);
+      el.removeAttribute("xmlns");
+      const move = `translate(${offset} ${offset})`;
+      const base = el.getAttribute("transform");
+      el.setAttribute("transform", base ? `${move} ${base}` : move);
+      this.svgEl.insertBefore(el, this.overlayEl);
+      pasted.push(el);
+    }
+    this.selection = pasted;
+    this.refreshSelectionBoxes();
+    this.onSelectionChange(this.selection);
+    this.commit();
+    this.onStatus(`Pasted ${pasted.length} shape${pasted.length === 1 ? "" : "s"}`);
   }
   clearAll() {
     this.contentChildren().forEach((el) => el.remove());
@@ -1156,6 +1199,17 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.core.selectAll();
       return false;
     });
+    this.scope.register(["Mod"], "c", (evt) => {
+      if (this.mode !== "visual" || this.inFormField(evt)) return true;
+      this.core.copySelection();
+      return false;
+    });
+    this.scope.register(["Mod"], "v", (evt) => {
+      if (this.mode !== "visual" || this.inFormField(evt)) return true;
+      this.setTool("select");
+      this.core.paste();
+      return false;
+    });
     this.scope.register(["Mod"], "Enter", () => {
       void this.save();
       return false;
@@ -1177,12 +1231,13 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     });
     this.modalEl.addEventListener("keydown", (evt) => this.handleKeydown(evt));
   }
+  inFormField(evt) {
+    const target = evt.target;
+    return !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+  }
   handleKeydown(evt) {
     if (this.mode !== "visual") return;
-    const target = evt.target;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
-      return;
-    }
+    if (this.inFormField(evt)) return;
     if (evt.key === "Delete" || evt.key === "Backspace") {
       this.core.deleteSelection();
       evt.preventDefault();
@@ -1887,6 +1942,58 @@ ${blockSource}
         );
       } finally {
         rModal?.close();
+      }
+    }
+    {
+      let cModal = null;
+      try {
+        cModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        cModal.open();
+        await sleep(150);
+        const cCore = cModal.core;
+        const cSvg = cCore.svgEl;
+        const cr = cSvg.getBoundingClientRect();
+        cModal.setTool("rect");
+        firePointer(cSvg, "pointerdown", cr.left + cr.width * 0.2, cr.top + cr.height * 0.2);
+        firePointer(window, "pointermove", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+        firePointer(window, "pointerup", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+        cModal.setTool("select");
+        cCore.selectAll();
+        const original = cCore.contentChildren()[0];
+        cCore.copySelection();
+        cCore.paste();
+        const afterPaste = cCore.contentChildren();
+        check("paste duplicates the copied shape", afterPaste.length === 2, `count=${afterPaste.length}`);
+        const copy1 = cCore.selection[0];
+        check(
+          "pasted copy is selected and offset from the original",
+          cCore.selection.length === 1 && copy1 !== original && (copy1?.getAttribute("transform") ?? "").includes("translate"),
+          copy1?.getAttribute("transform") ?? "(none)"
+        );
+        cCore.paste();
+        const copy2 = cCore.selection[0];
+        check(
+          "second paste cascades the offset",
+          cCore.contentChildren().length === 3 && copy2?.getAttribute("transform") !== copy1?.getAttribute("transform"),
+          `${copy1?.getAttribute("transform")} vs ${copy2?.getAttribute("transform")}`
+        );
+        cCore.undo();
+        check("undo removes the pasted shape", cCore.contentChildren().length === 2, `count=${cCore.contentChildren().length}`);
+        cModal.close();
+        cModal = null;
+        cModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        cModal.open();
+        await sleep(150);
+        cModal.core.paste();
+        check(
+          "clipboard pastes across editor instances",
+          cModal.core.contentChildren().length === 1 && cModal.core.contentChildren()[0]?.tagName === "rect",
+          cModal.core.contentChildren().map((c) => c.tagName).join(",")
+        );
+      } finally {
+        cModal?.close();
       }
     }
   } catch (e) {

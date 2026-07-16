@@ -113,6 +113,13 @@ const DELETE_MIN_OPACITY = 0.15;
 // selection boxes and used as the hit area for dragging the selection.
 const SELBOX_PAD = 2;
 
+// Copy/paste: clipboard is module-level so shapes can be copied between
+// drawings within a session. Pasted copies are offset so they don't sit
+// exactly on the original; repeated pastes cascade.
+let shapeClipboard: string[] = [];
+let pasteGeneration = 0;
+const PASTE_OFFSET = 12;
+
 // Resize handles: on-screen pixel sizes, converted to svg units per zoom so
 // they look the same at any zoom level.
 const HANDLE_DOT_PX = 7;
@@ -546,6 +553,51 @@ export class SvgEditorCore {
         this.onSelectionChange(this.selection);
         this.commit();
         this.onStatus(`Deleted ${n} shape${n === 1 ? "" : "s"}`);
+    }
+
+    /** Copy the selected shapes to the (session-wide) shape clipboard. */
+    copySelection(): void {
+        if (this.selection.length === 0) {
+            this.onStatus("Nothing selected to copy");
+            return;
+        }
+        const ser = new XMLSerializer();
+        shapeClipboard = this.selection.map((el) => ser.serializeToString(el));
+        pasteGeneration = 0;
+        const n = shapeClipboard.length;
+        this.onStatus(`Copied ${n} shape${n === 1 ? "" : "s"}`);
+    }
+
+    canPaste(): boolean {
+        return shapeClipboard.length > 0;
+    }
+
+    /** Paste the copied shapes, offset and selected. Repeated pastes cascade. */
+    paste(): void {
+        if (shapeClipboard.length === 0) {
+            this.onStatus("Nothing to paste — copy a selection first");
+            return;
+        }
+        pasteGeneration++;
+        const offset = PASTE_OFFSET * pasteGeneration;
+        // Round-trip through the sanitizing parser: the clipboard may outlive
+        // the document the shapes were copied from.
+        const parsed = parseSvgSource(`<svg xmlns="${SVG_NS}">${shapeClipboard.join("")}</svg>`);
+        const pasted: SVGGraphicsElement[] = [];
+        for (const child of Array.from(parsed.children)) {
+            const el = this.svgEl.doc.importNode(child, true) as SVGGraphicsElement;
+            el.removeAttribute("xmlns"); // redundant per-shape declaration from the copy
+            const move = `translate(${offset} ${offset})`;
+            const base = el.getAttribute("transform");
+            el.setAttribute("transform", base ? `${move} ${base}` : move);
+            this.svgEl.insertBefore(el, this.overlayEl);
+            pasted.push(el);
+        }
+        this.selection = pasted;
+        this.refreshSelectionBoxes();
+        this.onSelectionChange(this.selection);
+        this.commit();
+        this.onStatus(`Pasted ${pasted.length} shape${pasted.length === 1 ? "" : "s"}`);
     }
 
     clearAll(): void {

@@ -728,6 +728,66 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 rModal?.close();
             }
         }
+
+        // ---- 22. Copy & paste ----
+        {
+            let cModal: SvgEditorModal | null = null;
+            try {
+                cModal = new SvgEditorModal(plugin.app, "", () => {});
+                cModal.open();
+                await sleep(150);
+                const cCore = cModal.core;
+                const cSvg = cCore.svgEl;
+                const cr = cSvg.getBoundingClientRect();
+                cModal.setTool("rect");
+                firePointer(cSvg, "pointerdown", cr.left + cr.width * 0.2, cr.top + cr.height * 0.2);
+                firePointer(window, "pointermove", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+                firePointer(window, "pointerup", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+                cModal.setTool("select");
+                cCore.selectAll();
+                const original = cCore.contentChildren()[0];
+
+                cCore.copySelection();
+                cCore.paste();
+                const afterPaste = cCore.contentChildren();
+                check("paste duplicates the copied shape", afterPaste.length === 2, `count=${afterPaste.length}`);
+                const copy1 = cCore.selection[0];
+                check(
+                    "pasted copy is selected and offset from the original",
+                    cCore.selection.length === 1 &&
+                        copy1 !== original &&
+                        (copy1?.getAttribute("transform") ?? "").includes("translate"),
+                    copy1?.getAttribute("transform") ?? "(none)"
+                );
+
+                cCore.paste();
+                const copy2 = cCore.selection[0];
+                check(
+                    "second paste cascades the offset",
+                    cCore.contentChildren().length === 3 &&
+                        copy2?.getAttribute("transform") !== copy1?.getAttribute("transform"),
+                    `${copy1?.getAttribute("transform")} vs ${copy2?.getAttribute("transform")}`
+                );
+
+                cCore.undo();
+                check("undo removes the pasted shape", cCore.contentChildren().length === 2, `count=${cCore.contentChildren().length}`);
+                cModal.close();
+                cModal = null;
+
+                // The clipboard is session-wide: paste into a fresh drawing.
+                cModal = new SvgEditorModal(plugin.app, "", () => {});
+                cModal.open();
+                await sleep(150);
+                cModal.core.paste();
+                check(
+                    "clipboard pastes across editor instances",
+                    cModal.core.contentChildren().length === 1 && cModal.core.contentChildren()[0]?.tagName === "rect",
+                    cModal.core.contentChildren().map((c) => c.tagName).join(",")
+                );
+            } finally {
+                cModal?.close();
+            }
+        }
     } catch (e) {
         check("self-test crashed", false, e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e));
     } finally {
