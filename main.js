@@ -142,12 +142,8 @@ var SvgEditorCore = class {
     this.pinch = null;
     /** Middle-button drag pan: the pointer driving it and its last position. */
     this.pan = null;
-    this.svgEl = containerEl.doc.createElementNS(SVG_NS, "svg");
-    this.svgEl.classList.add("svge-canvas");
-    this.overlayEl = containerEl.doc.createElementNS(SVG_NS, "g");
-    this.overlayEl.setAttribute("data-svge-overlay", "");
-    this.svgEl.appendChild(this.overlayEl);
-    containerEl.appendChild(this.svgEl);
+    this.svgEl = containerEl.createSvg("svg", { cls: "svge-canvas" });
+    this.overlayEl = this.svgEl.createSvg("g", { attr: { "data-svge-overlay": "" } });
     this.svgEl.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
     containerEl.addEventListener("pointerdown", (e) => this.handlePanStart(e));
     containerEl.addEventListener("wheel", this.boundWheel, { passive: false });
@@ -544,13 +540,10 @@ var SvgEditorCore = class {
     for (const el of this.selection) {
       const bb = this.svgBBox(el);
       const pad = SELBOX_PAD;
-      const rect = this.svgEl.doc.createElementNS(SVG_NS, "rect");
-      rect.setAttribute("class", "svge-selbox");
-      rect.setAttribute("x", String(bb.x - pad));
-      rect.setAttribute("y", String(bb.y - pad));
-      rect.setAttribute("width", String(bb.w + pad * 2));
-      rect.setAttribute("height", String(bb.h + pad * 2));
-      this.overlayEl.appendChild(rect);
+      this.overlayEl.createSvg("rect", {
+        cls: "svge-selbox",
+        attr: { x: bb.x - pad, y: bb.y - pad, width: bb.w + pad * 2, height: bb.h + pad * 2 }
+      });
     }
     this.drawResizeHandles();
   }
@@ -567,23 +560,16 @@ var SvgEditorCore = class {
       h: u.h + SELBOX_PAD * 2
     };
     const mk = (cls, dir, x, y, w, h) => {
-      const r = this.svgEl.doc.createElementNS(SVG_NS, "rect");
-      r.setAttribute("class", cls);
-      r.setAttribute("data-dir", dir);
-      r.setAttribute("x", String(x));
-      r.setAttribute("y", String(y));
-      r.setAttribute("width", String(w));
-      r.setAttribute("height", String(h));
-      this.overlayEl.appendChild(r);
+      this.overlayEl.createSvg("rect", {
+        cls,
+        attr: { "data-dir": dir, x, y, width: w, height: h }
+      });
     };
     if (this.selection.length > 1) {
-      const outline = this.svgEl.doc.createElementNS(SVG_NS, "rect");
-      outline.setAttribute("class", "svge-selbox");
-      outline.setAttribute("x", String(b.x));
-      outline.setAttribute("y", String(b.y));
-      outline.setAttribute("width", String(b.w));
-      outline.setAttribute("height", String(b.h));
-      this.overlayEl.appendChild(outline);
+      this.overlayEl.createSvg("rect", {
+        cls: "svge-selbox",
+        attr: { x: b.x, y: b.y, width: b.w, height: b.h }
+      });
     }
     const scale = this.svgEl.getScreenCTM()?.a || 1;
     const edge = HANDLE_EDGE_PX / scale;
@@ -711,42 +697,37 @@ var SvgEditorCore = class {
         };
       } else {
         if (!e.shiftKey) this.clearSelection();
-        const marquee = this.svgEl.doc.createElementNS(SVG_NS, "rect");
-        marquee.setAttribute("class", "svge-marquee");
-        marquee.setAttribute("x", String(p.x));
-        marquee.setAttribute("y", String(p.y));
-        this.overlayEl.appendChild(marquee);
+        const marquee = this.overlayEl.createSvg("rect", {
+          cls: "svge-marquee",
+          attr: { x: p.x, y: p.y }
+        });
         this.draw = { kind: "select", start: p, marqueeEl: marquee };
       }
     } else {
       let el;
       switch (this.tool) {
         case "line": {
-          el = this.svgEl.doc.createElementNS(SVG_NS, "line");
-          el.setAttribute("x1", String(round(p.x)));
-          el.setAttribute("y1", String(round(p.y)));
-          el.setAttribute("x2", String(round(p.x)));
-          el.setAttribute("y2", String(round(p.y)));
+          el = this.svgEl.createSvg("line", {
+            attr: { x1: round(p.x), y1: round(p.y), x2: round(p.x), y2: round(p.y) }
+          });
           break;
         }
         case "circle": {
-          el = this.svgEl.doc.createElementNS(SVG_NS, "circle");
-          el.setAttribute("cx", String(round(p.x)));
-          el.setAttribute("cy", String(round(p.y)));
-          el.setAttribute("r", "0");
+          el = this.svgEl.createSvg("circle", {
+            attr: { cx: round(p.x), cy: round(p.y), r: 0 }
+          });
           break;
         }
         case "rect": {
-          el = this.svgEl.doc.createElementNS(SVG_NS, "rect");
-          el.setAttribute("x", String(round(p.x)));
-          el.setAttribute("y", String(round(p.y)));
-          el.setAttribute("width", "0");
-          el.setAttribute("height", "0");
+          el = this.svgEl.createSvg("rect", {
+            attr: { x: round(p.x), y: round(p.y), width: 0, height: 0 }
+          });
           break;
         }
         default: {
-          el = this.svgEl.doc.createElementNS(SVG_NS, "path");
-          el.setAttribute("d", `M${round(p.x)},${round(p.y)}`);
+          el = this.svgEl.createSvg("path", {
+            attr: { d: `M${round(p.x)},${round(p.y)}` }
+          });
           break;
         }
       }
