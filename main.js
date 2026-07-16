@@ -82,6 +82,23 @@ function prettyPrintXml(xml) {
 }
 var DELETE_FADE_FACTOR = 0.6;
 var DELETE_MIN_OPACITY = 0.15;
+var SELBOX_PAD = 2;
+var shapeClipboard = [];
+var pasteGeneration = 0;
+var PASTE_OFFSET = 12;
+var HANDLE_DOT_PX = 7;
+var HANDLE_HIT_PX = 14;
+var HANDLE_EDGE_PX = 10;
+var RESIZE_CURSORS = {
+  n: "ns-resize",
+  s: "ns-resize",
+  e: "ew-resize",
+  w: "ew-resize",
+  nw: "nwse-resize",
+  se: "nwse-resize",
+  ne: "nesw-resize",
+  sw: "nesw-resize"
+};
 var MIN_ZOOM = 0.25;
 var MAX_ZOOM = 8;
 var SvgEditorCore = class {
@@ -282,6 +299,7 @@ var SvgEditorCore = class {
     const after = this.svgToClient(anchor);
     wrap.scrollLeft += after.x - fx;
     wrap.scrollTop += after.y - fy;
+    this.refreshSelectionBoxes();
     this.onZoomChange(z);
     this.onStatus(`Zoom ${Math.round(z * 100)}%`);
   }
@@ -357,7 +375,7 @@ var SvgEditorCore = class {
     if (tool !== "select") this.clearSelection();
     this.svgEl.dataset.tool = tool;
     const hints = {
-      select: "Select \u2014 click or drag a box; drag shapes to move",
+      select: "Select \u2014 click or drag a box; drag shapes to move, handles to resize",
       line: "Line \u2014 drag from start to end",
       circle: "Circle \u2014 drag outward from the center",
       rect: "Rectangle \u2014 drag corner to corner",
@@ -430,6 +448,46 @@ var SvgEditorCore = class {
     this.commit();
     this.onStatus(`Deleted ${n} shape${n === 1 ? "" : "s"}`);
   }
+  /** Copy the selected shapes to the (session-wide) shape clipboard. */
+  copySelection() {
+    if (this.selection.length === 0) {
+      this.onStatus("Nothing selected to copy");
+      return;
+    }
+    const ser = new XMLSerializer();
+    shapeClipboard = this.selection.map((el) => ser.serializeToString(el));
+    pasteGeneration = 0;
+    const n = shapeClipboard.length;
+    this.onStatus(`Copied ${n} shape${n === 1 ? "" : "s"}`);
+  }
+  canPaste() {
+    return shapeClipboard.length > 0;
+  }
+  /** Paste the copied shapes, offset and selected. Repeated pastes cascade. */
+  paste() {
+    if (shapeClipboard.length === 0) {
+      this.onStatus("Nothing to paste \u2014 copy a selection first");
+      return;
+    }
+    pasteGeneration++;
+    const offset = PASTE_OFFSET * pasteGeneration;
+    const parsed = parseSvgSource(`<svg xmlns="${SVG_NS}">${shapeClipboard.join("")}</svg>`);
+    const pasted = [];
+    for (const child of Array.from(parsed.children)) {
+      const el = this.svgEl.doc.importNode(child, true);
+      el.removeAttribute("xmlns");
+      const move = `translate(${offset} ${offset})`;
+      const base = el.getAttribute("transform");
+      el.setAttribute("transform", base ? `${move} ${base}` : move);
+      this.svgEl.insertBefore(el, this.overlayEl);
+      pasted.push(el);
+    }
+    this.selection = pasted;
+    this.refreshSelectionBoxes();
+    this.onSelectionChange(this.selection);
+    this.commit();
+    this.onStatus(`Pasted ${pasted.length} shape${pasted.length === 1 ? "" : "s"}`);
+  }
   clearAll() {
     this.contentChildren().forEach((el) => el.remove());
     this.clearSelection();
@@ -457,11 +515,35 @@ var SvgEditorCore = class {
       h: Math.abs(b.y - a.y)
     };
   }
-  refreshSelectionBoxes() {
-    for (const box of Array.from(this.overlayEl.querySelectorAll(".svge-selbox"))) box.remove();
+  /** Whether a point (svg coords) falls inside any selected shape's selection box. */
+  selectionAt(p) {
+    return this.selection.some((el) => {
+      const bb = this.svgBBox(el);
+      return p.x >= bb.x - SELBOX_PAD && p.x <= bb.x + bb.w + SELBOX_PAD && p.y >= bb.y - SELBOX_PAD && p.y <= bb.y + bb.h + SELBOX_PAD;
+    });
+  }
+  /** Union of the selected shapes' bounding boxes (svg coords, no padding). */
+  selectionUnionBox() {
+    if (this.selection.length === 0) return null;
+    let x1 = Infinity;
+    let y1 = Infinity;
+    let x2 = -Infinity;
+    let y2 = -Infinity;
     for (const el of this.selection) {
       const bb = this.svgBBox(el);
-      const pad = 2;
+      x1 = Math.min(x1, bb.x);
+      y1 = Math.min(y1, bb.y);
+      x2 = Math.max(x2, bb.x + bb.w);
+      y2 = Math.max(y2, bb.y + bb.h);
+    }
+    return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  }
+  refreshSelectionBoxes() {
+    const stale = this.overlayEl.querySelectorAll(".svge-selbox, .svge-rhit, .svge-rdot");
+    for (const box of Array.from(stale)) box.remove();
+    for (const el of this.selection) {
+      const bb = this.svgBBox(el);
+      const pad = SELBOX_PAD;
       const rect = this.svgEl.doc.createElementNS(SVG_NS, "rect");
       rect.setAttribute("class", "svge-selbox");
       rect.setAttribute("x", String(bb.x - pad));
@@ -469,6 +551,57 @@ var SvgEditorCore = class {
       rect.setAttribute("width", String(bb.w + pad * 2));
       rect.setAttribute("height", String(bb.h + pad * 2));
       this.overlayEl.appendChild(rect);
+    }
+    this.drawResizeHandles();
+  }
+  /** Resize handles around the selection: edge hit strips, corner hit
+   *  squares and the visible indicator dots. */
+  drawResizeHandles() {
+    if (this.tool !== "select") return;
+    const u = this.selectionUnionBox();
+    if (!u) return;
+    const b = {
+      x: u.x - SELBOX_PAD,
+      y: u.y - SELBOX_PAD,
+      w: u.w + SELBOX_PAD * 2,
+      h: u.h + SELBOX_PAD * 2
+    };
+    const mk = (cls, dir, x, y, w, h) => {
+      const r = this.svgEl.doc.createElementNS(SVG_NS, "rect");
+      r.setAttribute("class", cls);
+      r.setAttribute("data-dir", dir);
+      r.setAttribute("x", String(x));
+      r.setAttribute("y", String(y));
+      r.setAttribute("width", String(w));
+      r.setAttribute("height", String(h));
+      this.overlayEl.appendChild(r);
+    };
+    if (this.selection.length > 1) {
+      const outline = this.svgEl.doc.createElementNS(SVG_NS, "rect");
+      outline.setAttribute("class", "svge-selbox");
+      outline.setAttribute("x", String(b.x));
+      outline.setAttribute("y", String(b.y));
+      outline.setAttribute("width", String(b.w));
+      outline.setAttribute("height", String(b.h));
+      this.overlayEl.appendChild(outline);
+    }
+    const scale = this.svgEl.getScreenCTM()?.a || 1;
+    const edge = HANDLE_EDGE_PX / scale;
+    const hit = HANDLE_HIT_PX / scale;
+    const dot = HANDLE_DOT_PX / scale;
+    mk("svge-rhit", "n", b.x, b.y - edge / 2, b.w, edge);
+    mk("svge-rhit", "s", b.x, b.y + b.h - edge / 2, b.w, edge);
+    mk("svge-rhit", "w", b.x - edge / 2, b.y, edge, b.h);
+    mk("svge-rhit", "e", b.x + b.w - edge / 2, b.y, edge, b.h);
+    const xs = [["w", b.x], ["", b.x + b.w / 2], ["e", b.x + b.w]];
+    const ys = [["n", b.y], ["", b.y + b.h / 2], ["s", b.y + b.h]];
+    for (const [ny, cy] of ys) {
+      for (const [nx, cx] of xs) {
+        const dir = ny + nx;
+        if (!dir) continue;
+        if (dir.length === 2) mk("svge-rhit", dir, cx - hit / 2, cy - hit / 2, hit, hit);
+        mk("svge-rdot", dir, cx - dot / 2, cy - dot / 2, dot, dot);
+      }
     }
   }
   // ------------------------------------------------------------------
@@ -528,8 +661,22 @@ var SvgEditorCore = class {
       this.markForDeletion(this.draw, e.target);
       this.onStatus("Sweep over shapes to delete, release to confirm");
     } else if (this.tool === "select") {
+      const handleDir = e.target instanceof Element ? e.target.closest(".svge-rhit")?.getAttribute("data-dir") : null;
       const shape = this.topLevelShapeFor(e.target);
-      if (shape) {
+      if (handleDir && this.selection.length > 0) {
+        this.draw = {
+          kind: "resize",
+          start: p,
+          moved: false,
+          resizeDir: handleDir,
+          resizeBox: this.selectionUnionBox(),
+          moveTargets: this.selection.map((el) => ({
+            el,
+            baseTransform: el.getAttribute("transform")
+          }))
+        };
+        this.svgEl.style.cursor = RESIZE_CURSORS[handleDir] ?? "";
+      } else if (shape) {
         if (e.shiftKey) {
           if (this.selection.includes(shape)) {
             this.selection = this.selection.filter((s) => s !== shape);
@@ -543,6 +690,16 @@ var SvgEditorCore = class {
         }
         this.refreshSelectionBoxes();
         this.onSelectionChange(this.selection);
+        this.draw = {
+          kind: "select",
+          start: p,
+          moved: false,
+          moveTargets: this.selection.map((el) => ({
+            el,
+            baseTransform: el.getAttribute("transform")
+          }))
+        };
+      } else if (!e.shiftKey && this.selectionAt(p)) {
         this.draw = {
           kind: "select",
           start: p,
@@ -614,7 +771,8 @@ var SvgEditorCore = class {
         if (original === null) el.removeAttribute("opacity");
         else el.setAttribute("opacity", original);
       }
-    } else if (d.kind === "select") {
+    } else if (d.kind === "select" || d.kind === "resize") {
+      if (d.kind === "resize") this.svgEl.style.removeProperty("cursor");
       d.marqueeEl?.remove();
       for (const t of d.moveTargets ?? []) {
         if (t.baseTransform === null) t.el.removeAttribute("transform");
@@ -655,6 +813,38 @@ var SvgEditorCore = class {
     switch (d.kind) {
       case "delete": {
         this.markForDeletion(d, this.svgEl.doc.elementFromPoint(e.clientX, e.clientY));
+        break;
+      }
+      case "resize": {
+        const box = d.resizeBox;
+        const dir = d.resizeDir;
+        const min = 1;
+        let sx = 1;
+        let sy = 1;
+        let ax = 0;
+        let ay = 0;
+        if (dir.includes("e")) {
+          ax = box.x;
+          sx = Math.max(min, p.x - box.x) / (box.w || 1);
+        }
+        if (dir.includes("w")) {
+          ax = box.x + box.w;
+          sx = Math.max(min, box.x + box.w - p.x) / (box.w || 1);
+        }
+        if (dir.includes("s")) {
+          ay = box.y;
+          sy = Math.max(min, p.y - box.y) / (box.h || 1);
+        }
+        if (dir.includes("n")) {
+          ay = box.y + box.h;
+          sy = Math.max(min, box.y + box.h - p.y) / (box.h || 1);
+        }
+        d.moved = true;
+        for (const t of d.moveTargets) {
+          const resize = `translate(${round(ax)} ${round(ay)}) scale(${round4(sx)} ${round4(sy)}) translate(${round(-ax)} ${round(-ay)})`;
+          t.el.setAttribute("transform", t.baseTransform ? `${resize} ${t.baseTransform}` : resize);
+        }
+        this.refreshSelectionBoxes();
         break;
       }
       case "select": {
@@ -729,6 +919,14 @@ var SvgEditorCore = class {
       this.onStatus(marks.size > 0 ? `Deleted ${marks.size} shape${marks.size === 1 ? "" : "s"}` : "Nothing deleted");
       return;
     }
+    if (d.kind === "resize") {
+      this.svgEl.style.removeProperty("cursor");
+      if (d.moved) {
+        this.commit();
+        this.onStatus("Resized");
+      }
+      return;
+    }
     if (d.kind === "select") {
       if (d.marqueeEl) {
         const mx = parseFloat(d.marqueeEl.getAttribute("x") ?? "0");
@@ -767,6 +965,9 @@ var SvgEditorCore = class {
 };
 function round(n) {
   return Math.round(n * 100) / 100;
+}
+function round4(n) {
+  return Math.round(n * 1e4) / 1e4;
 }
 function pathFromPoints(points) {
   if (points.length === 0) return "";
@@ -998,6 +1199,17 @@ var SvgEditorModal = class extends import_obsidian.Modal {
       this.core.selectAll();
       return false;
     });
+    this.scope.register(["Mod"], "c", (evt) => {
+      if (this.mode !== "visual" || this.inFormField(evt)) return true;
+      this.core.copySelection();
+      return false;
+    });
+    this.scope.register(["Mod"], "v", (evt) => {
+      if (this.mode !== "visual" || this.inFormField(evt)) return true;
+      this.setTool("select");
+      this.core.paste();
+      return false;
+    });
     this.scope.register(["Mod"], "Enter", () => {
       void this.save();
       return false;
@@ -1019,12 +1231,13 @@ var SvgEditorModal = class extends import_obsidian.Modal {
     });
     this.modalEl.addEventListener("keydown", (evt) => this.handleKeydown(evt));
   }
+  inFormField(evt) {
+    const target = evt.target;
+    return !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+  }
   handleKeydown(evt) {
     if (this.mode !== "visual") return;
-    const target = evt.target;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
-      return;
-    }
+    if (this.inFormField(evt)) return;
     if (evt.key === "Delete" || evt.key === "Backspace") {
       this.core.deleteSelection();
       evt.preventDefault();
@@ -1185,6 +1398,17 @@ async function runSelfTest(plugin) {
     firePointer(window, "pointerup", edge.x + 30, edge.y + 20);
     check("click selects shape", core.selection.length === 1, `selection=${core.selection.length}`);
     check("drag moves shape (transform set)", (shape.getAttribute("transform") ?? "").includes("translate"), shape.getAttribute("transform") ?? "(none)");
+    const tBefore = shape.getAttribute("transform") ?? "";
+    const ir = shape.getBoundingClientRect();
+    const ic = { x: ir.left + ir.width / 2, y: ir.top + ir.height / 2 };
+    firePointer(svg, "pointerdown", ic.x, ic.y);
+    firePointer(window, "pointermove", ic.x + 25, ic.y + 15);
+    firePointer(window, "pointerup", ic.x + 25, ic.y + 15);
+    check(
+      "drag inside unfilled selected shape moves it",
+      core.selection.length === 1 && (shape.getAttribute("transform") ?? "") !== tBefore,
+      `selection=${core.selection.length}, transform=${shape.getAttribute("transform")}`
+    );
     const before = shape.getAttribute("stroke");
     core.setStyle({ stroke: "#ff0000" });
     check("style change applies to selection", shape.getAttribute("stroke") === "#ff0000", `${before} \u2192 ${shape.getAttribute("stroke")}`);
@@ -1644,6 +1868,132 @@ ${blockSource}
         );
       } finally {
         pModal?.close();
+      }
+    }
+    {
+      let rModal = null;
+      try {
+        rModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        rModal.open();
+        await sleep(150);
+        const rCore = rModal.core;
+        const rSvg = rCore.svgEl;
+        const rr = rSvg.getBoundingClientRect();
+        rModal.setTool("rect");
+        firePointer(rSvg, "pointerdown", rr.left + rr.width * 0.2, rr.top + rr.height * 0.2);
+        firePointer(window, "pointermove", rr.left + rr.width * 0.4, rr.top + rr.height * 0.4);
+        firePointer(window, "pointerup", rr.left + rr.width * 0.4, rr.top + rr.height * 0.4);
+        const target = rCore.contentChildren()[0];
+        rModal.setTool("select");
+        const tr = target.getBoundingClientRect();
+        firePointer(target, "pointerdown", tr.left + 1, tr.top + tr.height / 2);
+        firePointer(window, "pointerup", tr.left + 1, tr.top + tr.height / 2);
+        check(
+          "selection shows 8 resize handles",
+          rSvg.querySelectorAll(".svge-rdot").length === 8 && rSvg.querySelectorAll(".svge-rhit").length === 8,
+          `dots=${rSvg.querySelectorAll(".svge-rdot").length}, hits=${rSvg.querySelectorAll(".svge-rhit").length}`
+        );
+        const seHit = rSvg.querySelector('.svge-rhit[data-dir="se"]');
+        const eHit = rSvg.querySelector('.svge-rhit[data-dir="e"]');
+        check(
+          "handles show directional resize cursors",
+          getComputedStyle(seHit).cursor === "nwse-resize" && getComputedStyle(eHit).cursor === "ew-resize",
+          `se=${getComputedStyle(seHit).cursor}, e=${getComputedStyle(eHit).cursor}`
+        );
+        const before2 = target.getBoundingClientRect();
+        const hr = seHit.getBoundingClientRect();
+        const hx = hr.left + hr.width / 2;
+        const hy = hr.top + hr.height / 2;
+        firePointer(seHit, "pointerdown", hx, hy);
+        firePointer(window, "pointermove", hx + before2.width, hy + before2.height);
+        firePointer(window, "pointerup", hx + before2.width, hy + before2.height);
+        const after = target.getBoundingClientRect();
+        check(
+          "corner drag scales both axes",
+          Math.abs(after.width - before2.width * 2) < 8 && Math.abs(after.height - before2.height * 2) < 8,
+          `${Math.round(before2.width)}\xD7${Math.round(before2.height)} \u2192 ${Math.round(after.width)}\xD7${Math.round(after.height)}`
+        );
+        check(
+          "resize keeps selection and uses a scale transform",
+          rCore.selection.length === 1 && (target.getAttribute("transform") ?? "").includes("scale"),
+          target.getAttribute("transform") ?? "(none)"
+        );
+        const b22 = target.getBoundingClientRect();
+        const er = rSvg.querySelector('.svge-rhit[data-dir="e"]').getBoundingClientRect();
+        const ex = er.left + er.width / 2;
+        const ey = er.top + er.height * 0.25;
+        firePointer(rSvg.querySelector('.svge-rhit[data-dir="e"]'), "pointerdown", ex, ey);
+        firePointer(window, "pointermove", ex - b22.width / 2, ey);
+        firePointer(window, "pointerup", ex - b22.width / 2, ey);
+        const b3 = target.getBoundingClientRect();
+        check(
+          "edge drag scales one axis only",
+          Math.abs(b3.height - b22.height) < 2 && b3.width < b22.width * 0.7,
+          `w ${Math.round(b22.width)}\u2192${Math.round(b3.width)}, h ${Math.round(b22.height)}\u2192${Math.round(b3.height)}`
+        );
+        rCore.undo();
+        rCore.undo();
+        const b4 = rCore.contentChildren()[0]?.getBoundingClientRect();
+        check(
+          "undo reverts resizes",
+          !!b4 && Math.abs(b4.width - before2.width) < 2 && Math.abs(b4.height - before2.height) < 2,
+          `${Math.round(b4?.width ?? 0)}\xD7${Math.round(b4?.height ?? 0)} vs ${Math.round(before2.width)}\xD7${Math.round(before2.height)}`
+        );
+      } finally {
+        rModal?.close();
+      }
+    }
+    {
+      let cModal = null;
+      try {
+        cModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        cModal.open();
+        await sleep(150);
+        const cCore = cModal.core;
+        const cSvg = cCore.svgEl;
+        const cr = cSvg.getBoundingClientRect();
+        cModal.setTool("rect");
+        firePointer(cSvg, "pointerdown", cr.left + cr.width * 0.2, cr.top + cr.height * 0.2);
+        firePointer(window, "pointermove", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+        firePointer(window, "pointerup", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+        cModal.setTool("select");
+        cCore.selectAll();
+        const original = cCore.contentChildren()[0];
+        cCore.copySelection();
+        cCore.paste();
+        const afterPaste = cCore.contentChildren();
+        check("paste duplicates the copied shape", afterPaste.length === 2, `count=${afterPaste.length}`);
+        const copy1 = cCore.selection[0];
+        check(
+          "pasted copy is selected and offset from the original",
+          cCore.selection.length === 1 && copy1 !== original && (copy1?.getAttribute("transform") ?? "").includes("translate"),
+          copy1?.getAttribute("transform") ?? "(none)"
+        );
+        cCore.paste();
+        const copy2 = cCore.selection[0];
+        check(
+          "second paste cascades the offset",
+          cCore.contentChildren().length === 3 && copy2?.getAttribute("transform") !== copy1?.getAttribute("transform"),
+          `${copy1?.getAttribute("transform")} vs ${copy2?.getAttribute("transform")}`
+        );
+        cCore.undo();
+        check("undo removes the pasted shape", cCore.contentChildren().length === 2, `count=${cCore.contentChildren().length}`);
+        cModal.close();
+        cModal = null;
+        cModal = new SvgEditorModal(plugin.app, "", () => {
+        });
+        cModal.open();
+        await sleep(150);
+        cModal.core.paste();
+        check(
+          "clipboard pastes across editor instances",
+          cModal.core.contentChildren().length === 1 && cModal.core.contentChildren()[0]?.tagName === "rect",
+          cModal.core.contentChildren().map((c) => c.tagName).join(",")
+        );
+      } finally {
+        cModal?.close();
       }
     }
   } catch (e) {

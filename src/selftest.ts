@@ -95,6 +95,21 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
         check("click selects shape", core.selection.length === 1, `selection=${core.selection.length}`);
         check("drag moves shape (transform set)", (shape.getAttribute("transform") ?? "").includes("translate"), shape.getAttribute("transform") ?? "(none)");
 
+        // The rect has no fill, so a click in its interior lands on the canvas
+        // background; with the shape selected that drag must move it, not
+        // clear the selection and start a marquee.
+        const tBefore = shape.getAttribute("transform") ?? "";
+        const ir = shape.getBoundingClientRect();
+        const ic = { x: ir.left + ir.width / 2, y: ir.top + ir.height / 2 };
+        firePointer(svg, "pointerdown", ic.x, ic.y);
+        firePointer(window, "pointermove", ic.x + 25, ic.y + 15);
+        firePointer(window, "pointerup", ic.x + 25, ic.y + 15);
+        check(
+            "drag inside unfilled selected shape moves it",
+            core.selection.length === 1 && (shape.getAttribute("transform") ?? "") !== tBefore,
+            `selection=${core.selection.length}, transform=${shape.getAttribute("transform")}`
+        );
+
         // ---- 4. Style change applies to selection ----
         const before = shape.getAttribute("stroke");
         core.setStyle({ stroke: "#ff0000" });
@@ -627,6 +642,150 @@ export async function runSelfTest(plugin: SvgEditorPlugin): Promise<void> {
                 );
             } finally {
                 pModal?.close();
+            }
+        }
+
+        // ---- 21. Resize handles on the selection box ----
+        {
+            let rModal: SvgEditorModal | null = null;
+            try {
+                rModal = new SvgEditorModal(plugin.app, "", () => {});
+                rModal.open();
+                await sleep(150);
+                const rCore = rModal.core;
+                const rSvg = rCore.svgEl;
+                const rr = rSvg.getBoundingClientRect();
+                rModal.setTool("rect");
+                firePointer(rSvg, "pointerdown", rr.left + rr.width * 0.2, rr.top + rr.height * 0.2);
+                firePointer(window, "pointermove", rr.left + rr.width * 0.4, rr.top + rr.height * 0.4);
+                firePointer(window, "pointerup", rr.left + rr.width * 0.4, rr.top + rr.height * 0.4);
+                const target = rCore.contentChildren()[0];
+
+                rModal.setTool("select");
+                const tr = target.getBoundingClientRect();
+                firePointer(target, "pointerdown", tr.left + 1, tr.top + tr.height / 2);
+                firePointer(window, "pointerup", tr.left + 1, tr.top + tr.height / 2);
+                check(
+                    "selection shows 8 resize handles",
+                    rSvg.querySelectorAll(".svge-rdot").length === 8 && rSvg.querySelectorAll(".svge-rhit").length === 8,
+                    `dots=${rSvg.querySelectorAll(".svge-rdot").length}, hits=${rSvg.querySelectorAll(".svge-rhit").length}`
+                );
+
+                const seHit = rSvg.querySelector<SVGRectElement>('.svge-rhit[data-dir="se"]')!;
+                const eHit = rSvg.querySelector<SVGRectElement>('.svge-rhit[data-dir="e"]')!;
+                check(
+                    "handles show directional resize cursors",
+                    getComputedStyle(seHit).cursor === "nwse-resize" && getComputedStyle(eHit).cursor === "ew-resize",
+                    `se=${getComputedStyle(seHit).cursor}, e=${getComputedStyle(eHit).cursor}`
+                );
+
+                // Drag the SE corner outward by the shape's own size → ~2× both axes.
+                const before = target.getBoundingClientRect();
+                const hr = seHit.getBoundingClientRect();
+                const hx = hr.left + hr.width / 2;
+                const hy = hr.top + hr.height / 2;
+                firePointer(seHit, "pointerdown", hx, hy);
+                firePointer(window, "pointermove", hx + before.width, hy + before.height);
+                firePointer(window, "pointerup", hx + before.width, hy + before.height);
+                const after = target.getBoundingClientRect();
+                check(
+                    "corner drag scales both axes",
+                    Math.abs(after.width - before.width * 2) < 8 && Math.abs(after.height - before.height * 2) < 8,
+                    `${Math.round(before.width)}×${Math.round(before.height)} → ${Math.round(after.width)}×${Math.round(after.height)}`
+                );
+                check(
+                    "resize keeps selection and uses a scale transform",
+                    rCore.selection.length === 1 && (target.getAttribute("transform") ?? "").includes("scale"),
+                    target.getAttribute("transform") ?? "(none)"
+                );
+
+                // Drag the east edge strip (off-center along the edge) inward:
+                // width shrinks, height must not change.
+                const b2 = target.getBoundingClientRect();
+                const er = rSvg.querySelector<SVGRectElement>('.svge-rhit[data-dir="e"]')!.getBoundingClientRect();
+                const ex = er.left + er.width / 2;
+                const ey = er.top + er.height * 0.25;
+                firePointer(rSvg.querySelector('.svge-rhit[data-dir="e"]')!, "pointerdown", ex, ey);
+                firePointer(window, "pointermove", ex - b2.width / 2, ey);
+                firePointer(window, "pointerup", ex - b2.width / 2, ey);
+                const b3 = target.getBoundingClientRect();
+                check(
+                    "edge drag scales one axis only",
+                    Math.abs(b3.height - b2.height) < 2 && b3.width < b2.width * 0.7,
+                    `w ${Math.round(b2.width)}→${Math.round(b3.width)}, h ${Math.round(b2.height)}→${Math.round(b3.height)}`
+                );
+
+                // Both resizes undo back to the drawn size.
+                rCore.undo();
+                rCore.undo();
+                const b4 = rCore.contentChildren()[0]?.getBoundingClientRect();
+                check(
+                    "undo reverts resizes",
+                    !!b4 && Math.abs(b4.width - before.width) < 2 && Math.abs(b4.height - before.height) < 2,
+                    `${Math.round(b4?.width ?? 0)}×${Math.round(b4?.height ?? 0)} vs ${Math.round(before.width)}×${Math.round(before.height)}`
+                );
+            } finally {
+                rModal?.close();
+            }
+        }
+
+        // ---- 22. Copy & paste ----
+        {
+            let cModal: SvgEditorModal | null = null;
+            try {
+                cModal = new SvgEditorModal(plugin.app, "", () => {});
+                cModal.open();
+                await sleep(150);
+                const cCore = cModal.core;
+                const cSvg = cCore.svgEl;
+                const cr = cSvg.getBoundingClientRect();
+                cModal.setTool("rect");
+                firePointer(cSvg, "pointerdown", cr.left + cr.width * 0.2, cr.top + cr.height * 0.2);
+                firePointer(window, "pointermove", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+                firePointer(window, "pointerup", cr.left + cr.width * 0.4, cr.top + cr.height * 0.4);
+                cModal.setTool("select");
+                cCore.selectAll();
+                const original = cCore.contentChildren()[0];
+
+                cCore.copySelection();
+                cCore.paste();
+                const afterPaste = cCore.contentChildren();
+                check("paste duplicates the copied shape", afterPaste.length === 2, `count=${afterPaste.length}`);
+                const copy1 = cCore.selection[0];
+                check(
+                    "pasted copy is selected and offset from the original",
+                    cCore.selection.length === 1 &&
+                        copy1 !== original &&
+                        (copy1?.getAttribute("transform") ?? "").includes("translate"),
+                    copy1?.getAttribute("transform") ?? "(none)"
+                );
+
+                cCore.paste();
+                const copy2 = cCore.selection[0];
+                check(
+                    "second paste cascades the offset",
+                    cCore.contentChildren().length === 3 &&
+                        copy2?.getAttribute("transform") !== copy1?.getAttribute("transform"),
+                    `${copy1?.getAttribute("transform")} vs ${copy2?.getAttribute("transform")}`
+                );
+
+                cCore.undo();
+                check("undo removes the pasted shape", cCore.contentChildren().length === 2, `count=${cCore.contentChildren().length}`);
+                cModal.close();
+                cModal = null;
+
+                // The clipboard is session-wide: paste into a fresh drawing.
+                cModal = new SvgEditorModal(plugin.app, "", () => {});
+                cModal.open();
+                await sleep(150);
+                cModal.core.paste();
+                check(
+                    "clipboard pastes across editor instances",
+                    cModal.core.contentChildren().length === 1 && cModal.core.contentChildren()[0]?.tagName === "rect",
+                    cModal.core.contentChildren().map((c) => c.tagName).join(",")
+                );
+            } finally {
+                cModal?.close();
             }
         }
     } catch (e) {

@@ -10,7 +10,8 @@ An Obsidian plugin that turns ```` ```svg ```` code blocks and embedded `.svg` f
 - **Convert between the two** — a second hover button on each: on an inline block it saves the drawing as a `.svg` file in the vault (named after the note, placed per your attachment settings) and replaces the block with an embed link; on an embed it inlines the file's source as a ```` ```svg ```` block (the `.svg` file is kept).
 - **Visual mode**
   - Tools: select & move (`V`), line (`L`), circle (`C`), rectangle (`R`), freehand scribble (`P`), delete (`X` — click a shape, or press and sweep over several; they fade as they're marked and are removed on release)
-  - Click / shift-click / marquee (rubber-band) selection; drag to move; `Delete` removes the selection; `Ctrl/Cmd+A` selects all
+  - Click / shift-click / marquee (rubber-band) selection; drag to move; resize by dragging the selection box's edges or corner/edge handles; `Delete` removes the selection; `Ctrl/Cmd+A` selects all
+  - Copy & paste (`Ctrl/Cmd+C`, `Ctrl/Cmd+V`) — pasted copies land slightly offset and selected, repeated pastes cascade, and the clipboard works across drawings within a session
   - Stroke color & width, fill color with "none" toggle, opacity — applied to new shapes or to the current selection
   - Undo / redo (`Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`), clear canvas, canvas size controls
   - **Zoom & pan** — mouse wheel over the canvas zooms around the cursor and middle-button drag pans; on touch screens pinch to zoom and drag with two fingers to pan (a second finger cancels the stroke in progress). Plus zoom buttons and `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / `Ctrl/Cmd+0`. Zoom and pan are view-only and never change the saved SVG.
@@ -60,7 +61,7 @@ obsidian vault=<name> command id=svg-editor:self-test
 obsidian vault=<name> read path=SVGE-SelfTest-Report.md
 ```
 
-The self-test opens the real modal, draws each shape with synthetic pointer events, exercises select/move, sweep-to-delete, styling, undo/redo, code-mode round-trips, invalid-code rejection, canvas resize, save, write-back into a real note (including the stale-line fallback search), the markdown renderer, sanitization, the mobile behavior (compact layout, touch drawing, delete button, visible edit button), `.svg` file editing (load, save back to the file, embed decoration), zoom (wheel, pinch, reset, coordinate mapping while zoomed, and that zoom never leaks into the saved source), and panning (middle-button drag, two-finger drag) — and reports PASS/FAIL per check. The mobile checks run against the real mobile UI when the app is mobile/emulated, and against a simulated `is-mobile` body class on desktop; the test itself never toggles emulation because `app.emulateMobile()` reloads the app window.
+The self-test opens the real modal, draws each shape with synthetic pointer events, exercises select/move, sweep-to-delete, copy/paste, styling, undo/redo, code-mode round-trips, invalid-code rejection, canvas resize, save, write-back into a real note (including the stale-line fallback search), the markdown renderer, sanitization, the mobile behavior (compact layout, touch drawing, delete button, visible edit button), `.svg` file editing (load, save back to the file, embed decoration), zoom (wheel, pinch, reset, coordinate mapping while zoomed, and that zoom never leaks into the saved source), and panning (middle-button drag, two-finger drag) — and reports PASS/FAIL per check. The mobile checks run against the real mobile UI when the app is mobile/emulated, and against a simulated `is-mobile` body class on desktop; the test itself never toggles emulation because `app.emulateMobile()` reloads the app window.
 
 ## Layout
 

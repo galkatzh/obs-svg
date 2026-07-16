@@ -266,6 +266,42 @@ svg.svge-canvas .svge-selbox {
     pointer-events: none;
 }
 
+/* Resize handles: invisible hit areas on the selection box's edges and
+   corners, with small visible indicator squares. */
+svg.svge-canvas .svge-rhit {
+    fill: transparent;
+    stroke: none;
+    pointer-events: all;
+}
+
+svg.svge-canvas .svge-rdot {
+    fill: var(--color-accent, #7c3aed);
+    stroke: var(--background-primary, #fff);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+svg.svge-canvas .svge-rhit[data-dir="n"],
+svg.svge-canvas .svge-rhit[data-dir="s"] {
+    cursor: ns-resize;
+}
+
+svg.svge-canvas .svge-rhit[data-dir="e"],
+svg.svge-canvas .svge-rhit[data-dir="w"] {
+    cursor: ew-resize;
+}
+
+svg.svge-canvas .svge-rhit[data-dir="nw"],
+svg.svge-canvas .svge-rhit[data-dir="se"] {
+    cursor: nwse-resize;
+}
+
+svg.svge-canvas .svge-rhit[data-dir="ne"],
+svg.svge-canvas .svge-rhit[data-dir="sw"] {
+    cursor: nesw-resize;
+}
+
 svg.svge-canvas .svge-marquee {
     fill: rgba(0, 170, 255, 0.08);
     stroke: #00aaff;
